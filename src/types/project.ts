@@ -11,6 +11,8 @@ export interface Project {
   total_sales: number;
   created_at: string;
   updated_at: string;
+  estimator_name?: string | null;
+  notes?: string | null;
 }
 
 export const STATUS_LABELS: Record<ProjectStatus, string> = {

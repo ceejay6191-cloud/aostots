@@ -169,3 +169,55 @@ export function useUpdateProjectStatus() {
     },
   });
 }
+
+export function useProject(id?: string) {
+  return useQuery({
+    queryKey: ['project', id],
+    enabled: !!id,
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('projects')
+        .select('*')
+        .eq('id', id!)
+        .single();
+
+      if (error) throw error;
+      return data as Project;
+    },
+  });
+}
+
+export function useUpdateProject() {
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+
+  return useMutation({
+    mutationFn: async ({
+      id,
+      patch,
+    }: {
+      id: string;
+      patch: Partial<Pick<Project, 'name' | 'client_name' | 'client_email' | 'client_phone' | 'status' | 'estimator_name' | 'notes'>>;
+    }) => {
+      const { data, error } = await supabase
+        .from('projects')
+        .update(patch)
+        .eq('id', id)
+        .select()
+        .single();
+
+      if (error) throw error;
+      return data as Project;
+    },
+    onSuccess: (updated) => {
+      queryClient.invalidateQueries({ queryKey: ['projects'] });
+      queryClient.invalidateQueries({ queryKey: ['project-stats'] });
+      queryClient.invalidateQueries({ queryKey: ['recent-projects'] });
+      queryClient.invalidateQueries({ queryKey: ['project', updated.id] });
+      toast({ title: 'Saved', description: 'Project updated successfully.' });
+    },
+    onError: (error) => {
+      toast({ title: 'Error', description: error.message, variant: 'destructive' });
+    },
+  });
+}

@@ -8,9 +8,10 @@ import Index from "./pages/Index";
 import Auth from "./pages/Auth";
 import Dashboard from "./pages/Dashboard";
 import Projects from "./pages/Projects";
+import Project from "./pages/Project";
 import NewProject from "./pages/NewProject";
 import NotFound from "./pages/NotFound";
-import MarketingSite from "@/components/aostot/MarketingSite";
+import ProjectDetail from "./pages/ProjectDetail";
 
 const queryClient = new QueryClient();
 
@@ -26,6 +27,7 @@ const App = () => (
             <Route path="/auth" element={<Auth />} />
             <Route path="/dashboard" element={<Dashboard />} />
             <Route path="/projects" element={<Projects />} />
+            <Route path="/projects/:id" element={<ProjectDetail />} />
             <Route path="/projects/new" element={<NewProject />} />
             <Route path="*" element={<NotFound />} />
           </Routes>

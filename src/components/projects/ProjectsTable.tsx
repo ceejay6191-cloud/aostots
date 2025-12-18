@@ -10,6 +10,8 @@ import { format } from 'date-fns';
 import { FileQuestion } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useEffect } from 'react';
+import { Link } from "react-router-dom";
+
 
 interface ProjectsTableProps {
   statusFilter?: ProjectStatus;
@@ -95,7 +97,15 @@ export function ProjectsTable({ statusFilter }: ProjectsTableProps) {
                 highlightId === project.id && 'bg-primary/5 animate-pulse'
               )}
             >
-              <TableCell className="font-medium">{project.name}</TableCell>
+              <TableCell className="font-medium">
+  <Link
+    to={`/projects/${project.id}`}
+    className="text-slate-900 hover:underline"
+  >
+    {project.name}
+  </Link>
+</TableCell>
+
               <TableCell className="text-muted-foreground">{project.client_name}</TableCell>
               <TableCell className="text-right tabular-nums font-medium">
                 {formatCurrency(Number(project.total_sales))}

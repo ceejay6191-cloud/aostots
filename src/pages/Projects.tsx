@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { STATUS_LABELS, ProjectStatus } from '@/types/project';
 import { Plus } from 'lucide-react';
+import { Link } from "react-router-dom";
 
 export default function Projects() {
   const navigate = useNavigate();
@@ -56,3 +57,4 @@ export default function Projects() {
     </AppLayout>
   );
 }
+
