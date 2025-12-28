@@ -56,12 +56,80 @@ function formatBytes(bytes?: number | null) {
   return `${n.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
 }
 
+function PdfCanvasViewer({
+  url,
+  pageNumber,
+  scale,
+  rotation,
+  onError,
+}: {
+  url: string;
+  pageNumber: number;
+  scale: number;
+  rotation: number; // degrees, 0/90/180/270
+  onError?: (msg: string) => void;
+}) {
+  const [rendering, setRendering] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    (async () => {
+      if (!url || pageNumber < 1) return;
+      setRendering(true);
+      try {
+        const pdf = await getDocument(url).promise;
+        const page = await pdf.getPage(pageNumber);
+
+        const viewport = page.getViewport({ scale, rotation });
+        const canvas = document.getElementById("pdf-canvas") as HTMLCanvasElement | null;
+        if (!canvas) return;
+
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return;
+
+        canvas.width = Math.floor(viewport.width);
+        canvas.height = Math.floor(viewport.height);
+
+        const renderTask = page.render({ canvasContext: ctx, viewport });
+        await renderTask.promise;
+
+        if (cancelled) return;
+      } catch (e: any) {
+        if (!cancelled) onError?.(e?.message ?? "Failed to render PDF page.");
+      } finally {
+        if (!cancelled) setRendering(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [url, pageNumber, scale, rotation, onError]);
+
+  return (
+    <div className="space-y-2">
+      {rendering ? <div className="text-xs text-muted-foreground">Rendering…</div> : null}
+      <canvas id="pdf-canvas" className="max-w-full rounded border" />
+    </div>
+  );
+}
+
 export default function ProjectDocumentPages() {
   const { projectId, documentId } = useParams();
   const navigate = useNavigate();
   const qc = useQueryClient();
 
   const [busyCreatingPages, setBusyCreatingPages] = useState(false);
+
+  // Viewer state (B1)
+  const [signedUrl, setSignedUrl] = useState<string>("");
+  const [viewPage, setViewPage] = useState<number>(1);
+  const [zoom, setZoom] = useState<number>(1.25);
+  const [viewerRotation, setViewerRotation] = useState<number>(0); // 0/90/180/270
+
+  // Inline page name editing (B2 polish)
+  const [draftNames, setDraftNames] = useState<Record<string, string>>({});
 
   const { data: authUser } = useQuery({
     queryKey: ["auth-user"],
@@ -128,15 +196,34 @@ export default function ProjectDocumentPages() {
     return data.signedUrl;
   }
 
+  // Prepare signed URL for the viewer once doc loads
+  useEffect(() => {
+    (async () => {
+      if (!doc) return;
+      try {
+        const url = await getSignedPdfUrl(doc);
+        setSignedUrl(url);
+      } catch (e: any) {
+        toast({
+          title: "Failed to prepare viewer",
+          description: e?.message ?? "Unknown error",
+          variant: "destructive",
+        });
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [doc?.id]);
+
   async function ensurePagesExist() {
     if (!doc || !uid || !projectId) return;
 
     setBusyCreatingPages(true);
     try {
-      const signedUrl = await getSignedPdfUrl(doc);
+      const url = signedUrl || (await getSignedPdfUrl(doc));
+      if (!signedUrl) setSignedUrl(url);
 
       // Read the PDF to get numPages
-      const pdf = await getDocument(signedUrl).promise;
+      const pdf = await getDocument(url).promise;
       const numPages = pdf.numPages;
 
       // If pages already exist and match, do nothing
@@ -145,8 +232,6 @@ export default function ProjectDocumentPages() {
         return;
       }
 
-      // Insert rows for each page (1..numPages)
-      // For performance, we will NOT compute each page size here; sizes can be added later.
       const inserts = Array.from({ length: numPages }, (_, i) => ({
         document_id: doc.id,
         project_id: projectId,
@@ -158,14 +243,18 @@ export default function ProjectDocumentPages() {
         rotation: 0,
       }));
 
+      // NOTE: keep only onConflict - avoid ignoreDuplicates which may vary by client version
       const { error } = await supabase
         .from("document_pages")
-        .upsert(inserts, { onConflict: "document_id,page_number", ignoreDuplicates: true });
+        .upsert(inserts, { onConflict: "document_id,page_number" });
 
       if (error) throw error;
 
       toast({ title: "Pages created", description: `Detected and saved ${numPages} pages.` });
       await qc.invalidateQueries({ queryKey: ["document-pages", documentId] });
+
+      // ensure viewer page stays valid
+      setViewPage((p) => Math.min(Math.max(1, p), numPages));
     } catch (e: any) {
       toast({
         title: "Failed to create pages",
@@ -186,16 +275,24 @@ export default function ProjectDocumentPages() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [doc?.id, uid, pagesLoading]);
 
-  const renamePageMutation = useMutation({
-    mutationFn: async (page: PageRow) => {
-      const next = window.prompt(`Rename page ${page.page_number} to:`, page.page_name ?? "");
-      if (next === null) return; // cancelled
-      const trimmed = next.trim();
+  // Initialize drafts whenever pages load/refresh
+  useEffect(() => {
+    if (!pages) return;
+    setDraftNames((prev) => {
+      const next = { ...prev };
+      for (const p of pages) {
+        if (next[p.id] === undefined) next[p.id] = p.page_name ?? "";
+      }
+      return next;
+    });
+  }, [pages]);
 
+  const savePageNameMutation = useMutation({
+    mutationFn: async (payload: { pageId: string; pageName: string }) => {
       const { error } = await supabase
         .from("document_pages")
-        .update({ page_name: trimmed || null })
-        .eq("id", page.id);
+        .update({ page_name: payload.pageName.trim() || null })
+        .eq("id", payload.pageId);
 
       if (error) throw error;
     },
@@ -205,12 +302,18 @@ export default function ProjectDocumentPages() {
     },
     onError: (e: any) => {
       toast({
-        title: "Rename failed",
+        title: "Save failed",
         description: e?.message ?? "Unknown error",
         variant: "destructive",
       });
     },
   });
+
+  const totalPdfPages = useMemo(() => {
+    // If you want, we can store total pages in doc metadata later.
+    // For now, treat DB pages count as authoritative.
+    return pageCount;
+  }, [pageCount]);
 
   if (docLoading) {
     return (
@@ -263,85 +366,173 @@ export default function ProjectDocumentPages() {
           </div>
         </div>
 
-        <Card className="p-6 space-y-4">
-          <div className="text-sm text-muted-foreground">
-            Rename pages to match plan sheets (e.g., “GF Plan”, “Electrical”, “Roof”). Viewer/markups come next.
-          </div>
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
+          {/* Left: pages table */}
+          <Card className="lg:col-span-6 p-6 space-y-4">
+            <div className="text-sm text-muted-foreground">
+              Rename pages to match plan sheets (e.g., “Cover Sheet”, “General Notes”, “Electrical”, “Roof”).
+            </div>
 
-          <div className="overflow-auto rounded-xl border border-border">
-            <table className="min-w-full text-left text-sm">
-              <thead className="bg-muted/40">
-                <tr>
-                  <th className="px-4 py-3 text-xs font-semibold text-muted-foreground">#</th>
-                  <th className="px-4 py-3 text-xs font-semibold text-muted-foreground">Name</th>
-                  <th className="px-4 py-3 text-xs font-semibold text-muted-foreground">Meta</th>
-                  <th className="px-4 py-3 text-xs font-semibold text-muted-foreground text-right">Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {pagesLoading ? (
+            <div className="overflow-auto rounded-xl border border-border">
+              <table className="min-w-full text-left text-sm">
+                <thead className="bg-muted/40">
                   <tr>
-                    <td className="px-4 py-4 text-sm text-muted-foreground" colSpan={4}>
-                      Loading pages…
-                    </td>
+                    <th className="px-4 py-3 text-xs font-semibold text-muted-foreground">#</th>
+                    <th className="px-4 py-3 text-xs font-semibold text-muted-foreground">Name</th>
+                    <th className="px-4 py-3 text-xs font-semibold text-muted-foreground">Meta</th>
+                    <th className="px-4 py-3 text-xs font-semibold text-muted-foreground text-right">Actions</th>
                   </tr>
-                ) : (pages?.length ?? 0) === 0 ? (
-                  <tr>
-                    <td className="px-4 py-4 text-sm text-muted-foreground" colSpan={4}>
-                      No pages created yet. Click “Rescan PDF”.
-                    </td>
-                  </tr>
-                ) : (
-                  pages!.map((p) => (
-                    <tr key={p.id} className="border-t border-border">
-                      <td className="px-4 py-3 font-medium">{p.page_number}</td>
-                      <td className="px-4 py-3">
-                        <Input
-                          value={p.page_name ?? ""}
-                          placeholder="(optional) Page name…"
-                          onChange={(e) => {
-                            // lightweight local edit UX would require local state; keep simple:
-                            // treat the input as informational and use Rename action to save
-                          }}
-                          disabled
-                        />
-                        <div className="mt-1 text-xs text-muted-foreground">
-                          {p.page_name ? "Named" : "Unnamed"}
-                        </div>
-                      </td>
-                      <td className="px-4 py-3 text-muted-foreground">
-                        {p.width_px && p.height_px ? `${p.width_px}×${p.height_px}` : "—"}
-                      </td>
-                      <td className="px-4 py-3">
-                        <div className="flex justify-end gap-2">
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() => renamePageMutation.mutate(p)}
-                            disabled={renamePageMutation.isPending}
-                          >
-                            Rename
-                          </Button>
-                          <Button
-                            size="sm"
-                            onClick={() =>
-                              toast({
-                                title: "Next step",
-                                description: "Viewer/markups will be in Part C.",
-                              })
-                            }
-                          >
-                            Open
-                          </Button>
-                        </div>
+                </thead>
+                <tbody>
+                  {pagesLoading ? (
+                    <tr>
+                      <td className="px-4 py-4 text-sm text-muted-foreground" colSpan={4}>
+                        Loading pages…
                       </td>
                     </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
-        </Card>
+                  ) : (pages?.length ?? 0) === 0 ? (
+                    <tr>
+                      <td className="px-4 py-4 text-sm text-muted-foreground" colSpan={4}>
+                        No pages created yet. Click “Rescan PDF”.
+                      </td>
+                    </tr>
+                  ) : (
+                    pages!.map((p) => (
+                      <tr key={p.id} className="border-t border-border">
+                        <td className="px-4 py-3 font-medium">{p.page_number}</td>
+
+                        <td className="px-4 py-3">
+                          <Input
+                            value={draftNames[p.id] ?? ""}
+                            placeholder="(optional) Page name…"
+                            onChange={(e) =>
+                              setDraftNames((prev) => ({
+                                ...prev,
+                                [p.id]: e.target.value,
+                              }))
+                            }
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") {
+                                e.currentTarget.blur();
+                              }
+                            }}
+                            onBlur={() => {
+                              const next = (draftNames[p.id] ?? "").trim();
+                              const current = (p.page_name ?? "").trim();
+                              if (next === current) return;
+                              savePageNameMutation.mutate({ pageId: p.id, pageName: next });
+                            }}
+                          />
+                          <div className="mt-1 text-xs text-muted-foreground">
+                            {p.page_name ? "Saved" : "Not saved yet"}
+                          </div>
+                        </td>
+
+                        <td className="px-4 py-3 text-muted-foreground">
+                          {p.width_px && p.height_px ? `${p.width_px}×${p.height_px}` : "—"}
+                        </td>
+
+                        <td className="px-4 py-3">
+                          <div className="flex justify-end gap-2">
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => setViewPage(p.page_number)}
+                            >
+                              Open
+                            </Button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+
+          {/* Right: viewer (B1 completion) */}
+          <Card className="lg:col-span-6 p-6 space-y-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-sm font-medium">Viewer</div>
+                <div className="text-xs text-muted-foreground">
+                  {signedUrl ? `Page ${viewPage}${totalPdfPages ? ` of ${totalPdfPages}` : ""}` : "Preparing…"}
+                </div>
+              </div>
+
+              <div className="flex flex-wrap gap-2 justify-end">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setZoom((z) => Math.max(0.75, Number((z - 0.1).toFixed(2))))}
+                >
+                  Zoom -
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setZoom((z) => Math.min(3.0, Number((z + 0.1).toFixed(2))))}
+                >
+                  Zoom +
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setViewerRotation((r) => (r + 90) % 360)}
+                >
+                  Rotate
+                </Button>
+              </div>
+            </div>
+
+            {!signedUrl ? (
+              <div className="text-sm text-muted-foreground">Preparing secure link…</div>
+            ) : (
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="text-xs text-muted-foreground">
+                    Zoom: {zoom.toFixed(2)} • Rotation: {viewerRotation}°
+                  </div>
+                  <div className="flex gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={viewPage <= 1}
+                      onClick={() => setViewPage((p) => Math.max(1, p - 1))}
+                    >
+                      Prev
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={totalPdfPages ? viewPage >= totalPdfPages : false}
+                      onClick={() => setViewPage((p) => p + 1)}
+                    >
+                      Next
+                    </Button>
+                  </div>
+                </div>
+
+                <div className="overflow-auto max-h-[75vh] rounded border border-border p-3">
+                  <PdfCanvasViewer
+                    url={signedUrl}
+                    pageNumber={viewPage}
+                    scale={zoom}
+                    rotation={viewerRotation}
+                    onError={(msg) =>
+                      toast({
+                        title: "Viewer error",
+                        description: msg,
+                        variant: "destructive",
+                      })
+                    }
+                  />
+                </div>
+              </div>
+            )}
+          </Card>
+        </div>
       </div>
     </AppLayout>
   );
