@@ -32,6 +32,7 @@ const App = () => (
             <Route path="/projects/:projectId" element={<ProjectDetails />} />
             <Route path="/projects/new" element={<NewProject />} />
             <Route path="/projects/:projectId/documents/:documentId" element={<ProjectDocumentPages />} />
+
             <Route path="*" element={<NotFound />} />
           </Routes>
         </BrowserRouter>
