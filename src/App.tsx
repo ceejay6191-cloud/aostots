@@ -11,8 +11,8 @@ import Projects from "./pages/Projects";
 import Project from "./pages/Project";
 import NewProject from "./pages/NewProject";
 import NotFound from "./pages/NotFound";
-import ProjectDetail from "./pages/ProjectDetail";
 import ProjectDetails from "./pages/ProjectDetails"; // add this import
+import ProjectDocumentPages from "@/pages/ProjectDocumentPages";
 import { Link } from "react-router-dom";
 
 const queryClient = new QueryClient();
@@ -29,9 +29,9 @@ const App = () => (
             <Route path="/auth" element={<Auth />} />
             <Route path="/dashboard" element={<Dashboard />} />
             <Route path="/projects" element={<Projects />} />
-            <Route path="/projects/:id" element={<ProjectDetail />} />
             <Route path="/projects/:projectId" element={<ProjectDetails />} />
             <Route path="/projects/new" element={<NewProject />} />
+            <Route path="/projects/:projectId/documents/:documentId" element={<ProjectDocumentPages />} />
             <Route path="*" element={<NotFound />} />
           </Routes>
         </BrowserRouter>

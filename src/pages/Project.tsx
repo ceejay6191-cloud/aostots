@@ -107,21 +107,4 @@ export default function Project() {
   );
 }
 
-export type ProjectStatus = 'templates' | 'estimating' | 'preliminaries' | 'accepted';
 
-export interface Project {
-  id: string;
-  name: string;
-  client_name: string;
-  client_email?: string;
-  client_phone?: string;
-  total_sales: number;
-  status: ProjectStatus;
-  owner_id: string;
-  created_at: string;
-  updated_at: string;
-
-  // NEW
-  estimator_name?: string | null;
-  notes?: string | null;
-}
