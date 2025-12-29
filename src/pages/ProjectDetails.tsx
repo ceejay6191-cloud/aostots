@@ -13,6 +13,7 @@ import { toast } from "@/components/ui/use-toast";
 
 import { supabase } from "@/integrations/supabase/client";
 import { STATUS_LABELS, ProjectStatus } from "@/types/project";
+import TakeoffWorkspace from "@/pages/TakeoffWorkspace";
 
 // shadcn dialog
 import {
@@ -805,13 +806,9 @@ export default function ProjectDetails() {
 
           {/* Takeoff */}
           <TabsContent value="takeoff" className="mt-6">
-            <Card className="p-6 space-y-2">
-              <div className="text-lg font-semibold">Takeoff</div>
-              <div className="text-sm text-muted-foreground">
-                Placeholder. Next: PDF viewer + markups/measurements feeding Estimating BOQ.
-              </div>
-            </Card>
-          </TabsContent>
+  {projectId ? <TakeoffWorkspace projectId={projectId} /> : null}
+</TabsContent>
+
 
           {/* Estimating */}
           <TabsContent value="estimating" className="mt-6">

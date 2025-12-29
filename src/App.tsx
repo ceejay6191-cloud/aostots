@@ -8,11 +8,11 @@ import Index from "./pages/Index";
 import Auth from "./pages/Auth";
 import Dashboard from "./pages/Dashboard";
 import Projects from "./pages/Projects";
-import Project from "./pages/Project";
 import NewProject from "./pages/NewProject";
 import NotFound from "./pages/NotFound";
 import ProjectDetails from "./pages/ProjectDetails"; // add this import
 import ProjectDocumentPages from "@/pages/ProjectDocumentPages";
+import TakeoffWorkspace from "@/pages/TakeoffWorkspace";
 import { Link } from "react-router-dom";
 
 const queryClient = new QueryClient();
@@ -32,6 +32,7 @@ const App = () => (
             <Route path="/projects/:projectId" element={<ProjectDetails />} />
             <Route path="/projects/new" element={<NewProject />} />
             <Route path="/projects/:projectId/documents/:documentId" element={<ProjectDocumentPages />} />
+            <Route path="/projects/:projectId/takeoff" element={<TakeoffWorkspace />} />
             <Route path="*" element={<NotFound />} />
           </Routes>
         </BrowserRouter>
