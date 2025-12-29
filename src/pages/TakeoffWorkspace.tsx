@@ -224,18 +224,16 @@ function centerScroll(el: HTMLDivElement | null) {
 
 type Tool = "select" | "pan" | "line" | "area" | "count";
 
-export default function TakeoffWorkspace() {
-  const { projectId } = useParams();
-  const navigate = useNavigate();
+type TakeoffWorkspaceContentProps = {
+  projectId: string;
+  embedded?: boolean; // when shown inside ProjectDetails tabs
+};
 
-  // Maximize drawing space: remove page scrollbar while this page is mounted
-  useEffect(() => {
-    const prev = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    return () => {
-      document.body.style.overflow = prev;
-    };
-  }, []);
+export function TakeoffWorkspaceContent({
+  projectId,
+  embedded = true,
+}: TakeoffWorkspaceContentProps) {
+  const navigate = useNavigate();
 
   const [leftOpen, setLeftOpen] = useState(true);
   const [rightOpen, setRightOpen] = useState(true);
@@ -391,8 +389,7 @@ export default function TakeoffWorkspace() {
     const base = baseSizeRef.current;
     if (!box || !base || base.w <= 1 || base.h <= 1) return;
 
-    // very small padding so we maximize drawing space
-    const padding = 10;
+    const padding = 12;
     const w = Math.max(1, box.clientWidth - padding);
     const h = Math.max(1, box.clientHeight - padding);
 
@@ -466,12 +463,11 @@ export default function TakeoffWorkspace() {
     setScaleText(next.trim() || null);
   }
 
-  // Wheel zoom (scroll up/down)
+  // Wheel zoom (scroll up/down) — only when cursor is over the viewer
   const onViewerWheel = useCallback(
     (e: React.WheelEvent) => {
       if (!scrollRef.current || !baseSizeRef.current) return;
 
-      // Always zoom on wheel per your request
       e.preventDefault();
 
       const el = scrollRef.current;
@@ -484,356 +480,383 @@ export default function TakeoffWorkspace() {
       const oldW = base.w * zoom;
       const oldH = base.h * zoom;
 
-      // cursor point in content coords
       const contentX = el.scrollLeft + ox;
       const contentY = el.scrollTop + oy;
 
       const nx = oldW > 1 ? contentX / oldW : 0.5;
       const ny = oldH > 1 ? contentY / oldH : 0.5;
 
-      // wheel delta -> zoom factor
-      // negative deltaY = zoom in, positive = zoom out
       const dir = e.deltaY < 0 ? 1 : -1;
-      const step = 0.08; // smooth but fast enough
-      const nextZoom = Math.max(0.2, Math.min(3.0, Number((zoom * (1 + dir * step)).toFixed(4))));
+      const step = 0.08;
 
-      wheelAnchorRef.current = {
-        targetZoom: nextZoom,
-        nx,
-        ny,
-        ox,
-        oy,
-      };
+      const nextZoom = Math.max(
+        0.2,
+        Math.min(3.0, Number((zoom * (1 + dir * step)).toFixed(4)))
+      );
 
+      wheelAnchorRef.current = { targetZoom: nextZoom, nx, ny, ox, oy };
       setZoom(nextZoom);
     },
     [zoom]
   );
 
-  // Hide scrollbars but keep scroll working
+  // hide scrollbars but keep scrolling
   const hideScrollbarStyle: React.CSSProperties = {
     scrollbarWidth: "none",
     msOverflowStyle: "none",
   };
 
-  const viewerHeight = "calc(100vh - 210px)"; // tuned to maximize drawing space without page scrolling
+  // IMPORTANT: do NOT lock body scroll here (you want to scroll down to enlarge workspace)
 
   return (
-    <AppLayout>
+    <>
       {/* local css for webkit scrollbar */}
       <style>{`
         .no-scrollbar::-webkit-scrollbar { display: none; }
       `}</style>
 
-      {/* Lock the page to viewport height (max drawing space) */}
-      <div className="h-[calc(100vh-120px)] flex flex-col overflow-hidden">
-        {/* Header row (tight) */}
-        <div className="flex items-center justify-between gap-3 flex-none">
-          <div className="min-w-0">
-            <div className="text-xl font-bold truncate">{project?.name ?? "Takeoff"}</div>
-            <div className="mt-0.5 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-              <Badge variant="secondary">Takeoff</Badge>
-              {selectedDoc ? (
-                <>
-                  <span>•</span>
-                  <span className="truncate">{selectedDoc.file_name}</span>
-                  <span>•</span>
-                  <span>
-                    Page {viewPage}
-                    {pageCount ? ` / ${pageCount}` : ""}
-                  </span>
-                </>
-              ) : null}
-            </div>
+      {/* Header strip inside workspace */}
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-lg font-semibold truncate">{project?.name ?? "Takeoff"}</div>
+          <div className="mt-0.5 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+            <Badge variant="secondary">Takeoff</Badge>
+            {selectedDoc ? (
+              <>
+                <span>•</span>
+                <span className="truncate">{selectedDoc.file_name}</span>
+                <span>•</span>
+                <span>
+                  Page {viewPage}
+                  {pageCount ? ` / ${pageCount}` : ""}
+                </span>
+              </>
+            ) : null}
           </div>
+        </div>
 
-          <div className="flex gap-2 flex-none">
+        <div className="flex gap-2 flex-none">
+          {!embedded ? (
             <Button variant="outline" onClick={() => navigate(`/projects/${projectId}`)}>
               Back
             </Button>
+          ) : null}
 
-            <Button variant="outline" title={scaleTitle} onClick={onScaleClick}>
-              {scaleText ? `Scale: ${scaleText}` : "Scale"}
-            </Button>
-          </div>
+          <Button variant="outline" title={scaleTitle} onClick={onScaleClick}>
+            {scaleText ? `Scale: ${scaleText}` : "Scale"}
+          </Button>
         </div>
+      </div>
 
-        {/* Workspace */}
-        <div className="flex-1 overflow-hidden mt-3">
-          <div className="h-full grid grid-cols-12 gap-3 overflow-hidden">
-            {/* Left panel (Sheets) */}
-            {leftOpen ? (
-              <Card className="col-span-12 lg:col-span-3 p-2 overflow-hidden flex flex-col">
-                <div className="flex items-center justify-between flex-none">
-                  <div className="text-sm font-medium">Sheets</div>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setLeftOpen(false)}
-                    title="Hide sheets"
-                  >
-                    {"<<"}
-                  </Button>
-                </div>
-
-                <div className="mt-2 space-y-2 flex-none">
-                  <div className="text-[11px] text-muted-foreground">Document</div>
-                  <select
-                    className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
-                    value={selectedDocId}
-                    onChange={(e) => setSelectedDocId(e.target.value)}
-                  >
-                    {(documents ?? []).map((d) => (
-                      <option key={d.id} value={d.id}>
-                        {d.file_name}
-                      </option>
-                    ))}
-                  </select>
-
-                  <Input
-                    className="h-9"
-                    placeholder="Search sheets…"
-                    value={search}
-                    onChange={(e) => setSearch(e.target.value)}
-                  />
-
-                  <div className="text-[11px] text-muted-foreground">
-                    {pageCount ? `${pageCount} page(s)` : "No pages in DB yet"}
-                  </div>
-                </div>
-
-                <div
-                  className="mt-2 flex-1 overflow-auto rounded-lg border border-border no-scrollbar"
-                  style={hideScrollbarStyle}
+      {/* Workspace - make it fill the viewport width */}
+      <div className="mt-3">
+        <div className="grid grid-cols-12 gap-3">
+          {/* Left panel (Sheets) */}
+          {leftOpen ? (
+            <Card className="col-span-12 lg:col-span-3 p-2 overflow-hidden flex flex-col">
+              <div className="flex items-center justify-between">
+                <div className="text-sm font-medium">Sheets</div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setLeftOpen(false)}
+                  title="Hide sheets"
                 >
-                  <div className="divide-y">
-                    {filteredPages.length ? (
-                      filteredPages.map((p) => {
-                        const title = p.page_name?.trim() || `Page ${p.page_number}`;
-                        const active = p.page_number === viewPage;
-                        return (
-                          <button
-                            key={p.id}
-                            className={`w-full text-left px-2 py-2 hover:bg-muted/40 ${
-                              active ? "bg-muted/50" : ""
-                            }`}
-                            onClick={() => setViewPage(p.page_number)}
-                          >
-                            <div className="text-sm font-medium truncate">{title}</div>
-                            <div className="text-[11px] text-muted-foreground">#{p.page_number}</div>
-                          </button>
-                        );
-                      })
-                    ) : (
-                      <div className="p-3 text-sm text-muted-foreground">No results.</div>
-                    )}
-                  </div>
-                </div>
-              </Card>
-            ) : (
-              <div className="col-span-12 lg:col-span-1 flex items-start">
-                <Button variant="outline" size="sm" onClick={() => setLeftOpen(true)} title="Show sheets">
-                  {">>"}
-                </Button>
-              </div>
-            )}
-
-            {/* Center viewer (maximized) */}
-            <Card
-              className={`p-2 overflow-hidden flex flex-col ${
-                leftOpen && rightOpen
-                  ? "col-span-12 lg:col-span-6"
-                  : leftOpen || rightOpen
-                  ? "col-span-12 lg:col-span-8"
-                  : "col-span-12 lg:col-span-10"
-              }`}
-            >
-              {/* Toolbar */}
-              <div className="flex flex-wrap items-center justify-between gap-2 flex-none">
-                <div className="flex flex-wrap gap-2">
-                  <Button
-                    variant={tool === "select" ? "default" : "outline"}
-                    size="sm"
-                    onClick={() => setTool("select")}
-                  >
-                    Select
-                  </Button>
-                  <Button
-                    variant={tool === "pan" ? "default" : "outline"}
-                    size="sm"
-                    onClick={() => setTool("pan")}
-                  >
-                    Pan
-                  </Button>
-                  <Button variant={tool === "line" ? "default" : "outline"} size="sm" disabled>
-                    Line
-                  </Button>
-                  <Button variant={tool === "area" ? "default" : "outline"} size="sm" disabled>
-                    Area
-                  </Button>
-                  <Button variant={tool === "count" ? "default" : "outline"} size="sm" disabled>
-                    Count
-                  </Button>
-                </div>
-
-                <div className="flex flex-wrap gap-2 justify-end">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setViewPage((p) => Math.max(1, p - 1))}
-                    disabled={viewPage <= 1}
-                    title="Previous page"
-                  >
-                    ◀
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() =>
-                      setViewPage((p) => (pageCount ? Math.min(pageCount, p + 1) : p + 1))
-                    }
-                    disabled={pageCount ? viewPage >= pageCount : false}
-                    title="Next page"
-                  >
-                    ▶
-                  </Button>
-
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setZoom((z) => Math.max(0.2, Number((z - 0.1).toFixed(2))))}
-                    title="Zoom out"
-                  >
-                    -
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setZoom((z) => Math.min(3.0, Number((z + 0.1).toFixed(2))))}
-                    title="Zoom in"
-                  >
-                    +
-                  </Button>
-
-                  <Button variant="outline" size="sm" onClick={() => setFitPending(true)}>
-                    Fit
-                  </Button>
-
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setRotation((r) => (r + 90) % 360)}
-                  >
-                    Rotate
-                  </Button>
-
-                  <Badge variant="secondary">{Math.round(zoom * 100)}%</Badge>
-                </div>
-              </div>
-
-              {/* Viewer */}
-              <div className="mt-2 flex-1 overflow-hidden">
-                <div
-                  ref={viewerBoxRef}
-                  className="rounded-xl border border-border bg-muted/10 overflow-hidden"
-                  style={{ height: viewerHeight }}
-                >
-                  <div
-                    ref={scrollRef}
-                    className="h-full w-full overflow-auto no-scrollbar"
-                    style={hideScrollbarStyle}
-                    onPointerDown={pan.onPointerDown}
-                    onPointerMove={pan.onPointerMove}
-                    onPointerUp={pan.onPointerUp}
-                    onContextMenu={pan.onContextMenu}
-                    onWheel={onViewerWheel}
-                    // Important: allow preventDefault on wheel zoom
-                    // (React wheel is non-passive, so this works)
-                  >
-                    <div className="p-1">
-                      <div
-                        className="relative inline-block"
-                        style={{ width: viewportPx.width, height: viewportPx.height }}
-                      >
-                        {!signedUrl || !pdfDoc ? (
-                          <div className="absolute inset-0 flex items-center justify-center text-sm text-muted-foreground">
-                            {documents?.length
-                              ? "Loading document…"
-                              : "Upload a PDF in Documents tab first."}
-                          </div>
-                        ) : (
-                          <PdfCanvasViewer
-                            pdfDoc={pdfDoc}
-                            pageNumber={viewPage}
-                            scale={zoom}
-                            rotation={rotation}
-                            onViewport={handleViewport}
-                            onError={handleViewerError}
-                          />
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="mt-1 text-[11px] text-muted-foreground">
-                  Wheel = zoom • Pan: {tool === "pan" ? "left-drag or right-drag" : "right-drag"}
-                </div>
-              </div>
-            </Card>
-
-            {/* Right panel (Properties) */}
-            {rightOpen ? (
-              <Card className="col-span-12 lg:col-span-3 p-2 overflow-hidden flex flex-col">
-                <div className="flex items-center justify-between flex-none">
-                  <div className="text-sm font-medium">Properties</div>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setRightOpen(false)}
-                    title="Hide properties"
-                  >
-                    {">>"}
-                  </Button>
-                </div>
-
-                <div className="mt-2 space-y-2 overflow-auto no-scrollbar" style={hideScrollbarStyle}>
-                  <div className="rounded-lg border border-border p-3">
-                    <div className="text-sm font-medium">Drawing Scale</div>
-                    <div className="text-xs text-muted-foreground">
-                      {scaleText ? `Current: ${scaleText}` : "Not defined yet"}
-                    </div>
-                  </div>
-
-                  <div className="rounded-lg border border-border p-3">
-                    <div className="text-sm font-medium">Selected</div>
-                    <div className="text-xs text-muted-foreground">
-                      {tool === "select" ? "No selection (tools coming next)" : "Tool active"}
-                    </div>
-                  </div>
-
-                  <div className="rounded-lg border border-border p-3">
-                    <div className="text-sm font-medium">Quick actions</div>
-                    <div className="mt-2 flex gap-2">
-                      <Button variant="outline" size="sm" disabled>
-                        Undo
-                      </Button>
-                      <Button variant="outline" size="sm" disabled>
-                        Redo
-                      </Button>
-                    </div>
-                  </div>
-                </div>
-              </Card>
-            ) : (
-              <div className="col-span-12 lg:col-span-1 flex items-start justify-end">
-                <Button variant="outline" size="sm" onClick={() => setRightOpen(true)} title="Show properties">
                   {"<<"}
                 </Button>
               </div>
-            )}
-          </div>
+
+              <div className="mt-2 space-y-2">
+                <div className="text-[11px] text-muted-foreground">Document</div>
+                <select
+                  className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
+                  value={selectedDocId}
+                  onChange={(e) => setSelectedDocId(e.target.value)}
+                >
+                  {(documents ?? []).map((d) => (
+                    <option key={d.id} value={d.id}>
+                      {d.file_name}
+                    </option>
+                  ))}
+                </select>
+
+                <Input
+                  className="h-9"
+                  placeholder="Search sheets…"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                />
+
+                <div className="text-[11px] text-muted-foreground">
+                  {pageCount ? `${pageCount} page(s)` : "No pages in DB yet"}
+                </div>
+              </div>
+
+              <div
+                className="mt-2 flex-1 overflow-auto rounded-lg border border-border no-scrollbar"
+                style={hideScrollbarStyle}
+              >
+                <div className="divide-y">
+                  {filteredPages.length ? (
+                    filteredPages.map((p) => {
+                      const title = p.page_name?.trim() || `Page ${p.page_number}`;
+                      const active = p.page_number === viewPage;
+                      return (
+                        <button
+                          key={p.id}
+                          className={`w-full text-left px-2 py-2 hover:bg-muted/40 ${
+                            active ? "bg-muted/50" : ""
+                          }`}
+                          onClick={() => setViewPage(p.page_number)}
+                        >
+                          <div className="text-sm font-medium truncate">{title}</div>
+                          <div className="text-[11px] text-muted-foreground">#{p.page_number}</div>
+                        </button>
+                      );
+                    })
+                  ) : (
+                    <div className="p-3 text-sm text-muted-foreground">No results.</div>
+                  )}
+                </div>
+              </div>
+            </Card>
+          ) : (
+            <div className="col-span-12 lg:col-span-1 flex items-start">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setLeftOpen(true)}
+                title="Show sheets"
+              >
+                {">>"}
+              </Button>
+            </div>
+          )}
+
+          {/* Center viewer */}
+          <Card
+            className={`p-2 overflow-hidden flex flex-col ${
+              leftOpen && rightOpen
+                ? "col-span-12 lg:col-span-6"
+                : leftOpen || rightOpen
+                ? "col-span-12 lg:col-span-8"
+                : "col-span-12 lg:col-span-10"
+            }`}
+          >
+            {/* Toolbar */}
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  variant={tool === "select" ? "default" : "outline"}
+                  size="sm"
+                  onClick={() => setTool("select")}
+                >
+                  Select
+                </Button>
+                <Button
+                  variant={tool === "pan" ? "default" : "outline"}
+                  size="sm"
+                  onClick={() => setTool("pan")}
+                >
+                  Pan
+                </Button>
+                <Button variant={tool === "line" ? "default" : "outline"} size="sm" disabled>
+                  Line
+                </Button>
+                <Button variant={tool === "area" ? "default" : "outline"} size="sm" disabled>
+                  Area
+                </Button>
+                <Button variant={tool === "count" ? "default" : "outline"} size="sm" disabled>
+                  Count
+                </Button>
+              </div>
+
+              <div className="flex flex-wrap gap-2 justify-end">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setViewPage((p) => Math.max(1, p - 1))}
+                  disabled={viewPage <= 1}
+                  title="Previous page"
+                >
+                  ◀
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() =>
+                    setViewPage((p) => (pageCount ? Math.min(pageCount, p + 1) : p + 1))
+                  }
+                  disabled={pageCount ? viewPage >= pageCount : false}
+                  title="Next page"
+                >
+                  ▶
+                </Button>
+
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setZoom((z) => Math.max(0.2, Number((z - 0.1).toFixed(2))))}
+                  title="Zoom out"
+                >
+                  -
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setZoom((z) => Math.min(3.0, Number((z + 0.1).toFixed(2))))}
+                  title="Zoom in"
+                >
+                  +
+                </Button>
+
+                <Button variant="outline" size="sm" onClick={() => setFitPending(true)}>
+                  Fit
+                </Button>
+
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setRotation((r) => (r + 90) % 360)}
+                >
+                  Rotate
+                </Button>
+
+                <Badge variant="secondary">{Math.round(zoom * 100)}%</Badge>
+              </div>
+            </div>
+
+            {/* Viewer - DO NOT force a fixed height; let it expand when you scroll the page */}
+            <div className="mt-2">
+              <div
+                ref={viewerBoxRef}
+                className="rounded-xl border border-border bg-muted/10 overflow-hidden"
+                style={{
+                  // This makes the viewer big, but still allows the page to scroll to “enlarge” focus
+                  minHeight: embedded ? "70vh" : "80vh",
+                }}
+              >
+                <div
+                  ref={scrollRef}
+                  className="h-full w-full overflow-auto no-scrollbar"
+                  style={hideScrollbarStyle}
+                  onPointerDown={pan.onPointerDown}
+                  onPointerMove={pan.onPointerMove}
+                  onPointerUp={pan.onPointerUp}
+                  onContextMenu={pan.onContextMenu}
+                  onWheel={onViewerWheel}
+                >
+                  <div className="p-1">
+                    <div
+                      className="relative inline-block"
+                      style={{ width: viewportPx.width, height: viewportPx.height }}
+                    >
+                      {!signedUrl || !pdfDoc ? (
+                        <div className="absolute inset-0 flex items-center justify-center text-sm text-muted-foreground">
+                          {documents?.length
+                            ? "Loading document…"
+                            : "Upload a PDF in Documents tab first."}
+                        </div>
+                      ) : (
+                        <PdfCanvasViewer
+                          pdfDoc={pdfDoc}
+                          pageNumber={viewPage}
+                          scale={zoom}
+                          rotation={rotation}
+                          onViewport={handleViewport}
+                          onError={handleViewerError}
+                        />
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-1 text-[11px] text-muted-foreground">
+                Wheel = zoom • Pan: {tool === "pan" ? "left-drag or right-drag" : "right-drag"}
+              </div>
+            </div>
+          </Card>
+
+          {/* Right panel (Properties) */}
+          {rightOpen ? (
+            <Card className="col-span-12 lg:col-span-3 p-2 overflow-hidden flex flex-col">
+              <div className="flex items-center justify-between">
+                <div className="text-sm font-medium">Properties</div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setRightOpen(false)}
+                  title="Hide properties"
+                >
+                  {">>"}
+                </Button>
+              </div>
+
+              <div className="mt-2 space-y-2 overflow-auto no-scrollbar" style={hideScrollbarStyle}>
+                <div className="rounded-lg border border-border p-3">
+                  <div className="text-sm font-medium">Drawing Scale</div>
+                  <div className="text-xs text-muted-foreground">
+                    {scaleText ? `Current: ${scaleText}` : "Not defined yet"}
+                  </div>
+                </div>
+
+                <div className="rounded-lg border border-border p-3">
+                  <div className="text-sm font-medium">Selected</div>
+                  <div className="text-xs text-muted-foreground">
+                    {tool === "select" ? "No selection (tools coming next)" : "Tool active"}
+                  </div>
+                </div>
+
+                <div className="rounded-lg border border-border p-3">
+                  <div className="text-sm font-medium">Quick actions</div>
+                  <div className="mt-2 flex gap-2">
+                    <Button variant="outline" size="sm" disabled>
+                      Undo
+                    </Button>
+                    <Button variant="outline" size="sm" disabled>
+                      Redo
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            </Card>
+          ) : (
+            <div className="col-span-12 lg:col-span-1 flex items-start justify-end">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setRightOpen(true)}
+                title="Show properties"
+              >
+                {"<<"}
+              </Button>
+            </div>
+          )}
         </div>
+      </div>
+    </>
+  );
+}
+
+/**
+ * Standalone route page: /projects/:projectId/takeoff
+ * Keeps AppLayout ONLY here.
+ */
+export default function TakeoffWorkspacePage() {
+  const { projectId } = useParams();
+  if (!projectId) {
+    return (
+      <AppLayout>
+        <Card className="p-6">Missing project id.</Card>
+      </AppLayout>
+    );
+  }
+
+  return (
+    <AppLayout>
+      <div className="space-y-4">
+        <TakeoffWorkspaceContent projectId={projectId} embedded={false} />
       </div>
     </AppLayout>
   );

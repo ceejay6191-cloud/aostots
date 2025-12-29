@@ -13,7 +13,8 @@ import { toast } from "@/components/ui/use-toast";
 
 import { supabase } from "@/integrations/supabase/client";
 import { STATUS_LABELS, ProjectStatus } from "@/types/project";
-import TakeoffWorkspace from "@/pages/TakeoffWorkspace";
+import { TakeoffWorkspaceContent } from "@/pages/TakeoffWorkspace";
+
 
 // shadcn dialog
 import {
@@ -805,8 +806,31 @@ export default function ProjectDetails() {
           </TabsContent>
 
           {/* Takeoff */}
-          <TabsContent value="takeoff" className="mt-6">
-  {projectId ? <TakeoffWorkspace projectId={projectId} /> : null}
+<TabsContent value="takeoff" className="mt-6">
+  {/* Faded hint bar: lets user scroll down to focus on takeoff */}
+  <div className="mb-3 rounded-xl border border-border bg-card overflow-hidden">
+    <div className="px-4 py-3">
+      <div className="text-sm font-medium">Takeoff</div>
+      <div className="text-xs text-muted-foreground">
+        Scroll down to enlarge the takeoff workspace.
+      </div>
+    </div>
+
+    {/* Faded "scroll down" cue */}
+    <div className="relative h-10">
+      <div className="absolute inset-0 bg-gradient-to-b from-muted/20 to-transparent" />
+      <div className="absolute inset-0 flex items-center justify-center text-xs text-muted-foreground">
+        Scroll down ↓
+      </div>
+    </div>
+  </div>
+
+  {/* Break out of the centered container so the takeoff area can expand wider (yellow area) */}
+  <div className="-mx-4 sm:-mx-6 lg:-mx-8">
+    <div className="px-4 sm:px-6 lg:px-8">
+      <TakeoffWorkspaceContent projectId={projectId!} embedded />
+    </div>
+  </div>
 </TabsContent>
 
 
