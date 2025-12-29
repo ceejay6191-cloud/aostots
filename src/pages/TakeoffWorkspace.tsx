@@ -1,17 +1,22 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 
+// UI
 import { AppLayout } from "@/components/layout/AppLayout";
-import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "@/components/ui/use-toast";
 
+// Data
 import { supabase } from "@/integrations/supabase/client";
+import { STATUS_LABELS, ProjectStatus } from "@/types/project";
 
+// PDF.js
 import { GlobalWorkerOptions, getDocument } from "pdfjs-dist";
+import type { PDFDocumentProxy, RenderTask } from "pdfjs-dist";
+
 GlobalWorkerOptions.workerSrc = new URL(
   "pdfjs-dist/build/pdf.worker.min.mjs",
   import.meta.url
@@ -20,8 +25,7 @@ GlobalWorkerOptions.workerSrc = new URL(
 type ProjectRow = {
   id: string;
   name: string;
-  client_name: string | null;
-  status: string;
+  status: ProjectStatus;
 };
 
 type DocumentRow = {
@@ -37,255 +41,94 @@ type DocumentRow = {
 type PageRow = {
   id: string;
   document_id: string;
-  project_id: string;
-  owner_id: string;
   page_number: number;
-  page_name: string | null;
+  label: string | null;
 };
 
-function useLatest<T>(value: T) {
-  const ref = useRef(value);
-  useEffect(() => {
-    ref.current = value;
-  }, [value]);
-  return ref;
+type Size = { w: number; h: number };
+type Point = { x: number; y: number };
+
+function clamp(n: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, n));
 }
 
-/* -----------------------------
-   PDF Canvas Viewer (stable)
------------------------------ */
-function PdfCanvasViewer({
-  pdfDoc,
-  pageNumber,
-  scale,
-  rotation,
-  onViewport,
-  onError,
-}: {
-  pdfDoc: any | null;
-  pageNumber: number;
-  scale: number;
-  rotation: number;
-  onViewport?: (vp: { width: number; height: number }) => void; // CSS px
-  onError?: (msg: string) => void;
-}) {
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const renderTaskRef = useRef<any>(null);
-  const seqRef = useRef(0);
-
-  const onViewportRef = useLatest(onViewport);
-  const onErrorRef = useLatest(onError);
+function useResizeObserverSize(ref: React.RefObject<HTMLElement>, enabled: boolean) {
+  const [size, setSize] = useState<Size>({ w: 0, h: 0 });
 
   useEffect(() => {
-    let cancelled = false;
-
-    (async () => {
-      if (!pdfDoc || pageNumber < 1) return;
-
-      try {
-        renderTaskRef.current?.cancel?.();
-      } catch {
-        // ignore
-      }
-
-      const seq = ++seqRef.current;
-
-      try {
-        const page = await pdfDoc.getPage(pageNumber);
-        if (cancelled || seq !== seqRef.current) return;
-
-        const viewport = page.getViewport({ scale, rotation });
-
-        const canvas = canvasRef.current;
-        if (!canvas) return;
-
-        const ctx = canvas.getContext("2d", { alpha: false });
-        if (!ctx) return;
-
-        const dpr = window.devicePixelRatio || 1;
-
-        canvas.width = Math.floor(viewport.width * dpr);
-        canvas.height = Math.floor(viewport.height * dpr);
-        canvas.style.width = `${viewport.width}px`;
-        canvas.style.height = `${viewport.height}px`;
-
-        onViewportRef.current?.({ width: viewport.width, height: viewport.height });
-
-        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-        ctx.imageSmoothingEnabled = true;
-
-        const task = page.render({ canvasContext: ctx, viewport });
-        renderTaskRef.current = task;
-        await task.promise;
-
-        if (cancelled || seq !== seqRef.current) return;
-      } catch (e: any) {
-        const msg = String(e?.message ?? "");
-        const isCancel =
-          msg.toLowerCase().includes("cancel") ||
-          e?.name === "RenderingCancelledException";
-        if (!isCancel && !cancelled) {
-          onErrorRef.current?.(e?.message ?? "Failed to render PDF page.");
-        }
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-      try {
-        renderTaskRef.current?.cancel?.();
-      } catch {
-        // ignore
-      }
-    };
-  }, [pdfDoc, pageNumber, scale, rotation]);
-
-  return <canvas ref={canvasRef} className="block bg-white" />;
-}
-
-/* -----------------------------
-   Drag pan (scroll)
------------------------------ */
-function useDragPan(scrollRef: React.RefObject<HTMLDivElement>, allowLeftDrag: boolean) {
-  const draggingRef = useRef(false);
-  const lastRef = useRef<{ x: number; y: number } | null>(null);
-
-  function hasOverflow(el: HTMLDivElement) {
-    return el.scrollWidth > el.clientWidth || el.scrollHeight > el.clientHeight;
-  }
-
-  function canStart(e: React.PointerEvent, el: HTMLDivElement) {
-    if (!hasOverflow(el)) return false;
-    if (e.button === 2) return true; // right always
-    if (allowLeftDrag && e.button === 0) return true; // left when pan tool
-    return false;
-  }
-
-  function onPointerDown(e: React.PointerEvent) {
-    const el = scrollRef.current;
-    if (!el) return;
-    if (!canStart(e, el)) return;
-
-    draggingRef.current = true;
-    lastRef.current = { x: e.clientX, y: e.clientY };
-
-    try {
-      (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
-    } catch {
-      // ignore
-    }
-    e.preventDefault();
-  }
-
-  function onPointerMove(e: React.PointerEvent) {
-    if (!draggingRef.current) return;
-    const el = scrollRef.current;
+    if (!enabled) return;
+    const el = ref.current;
     if (!el) return;
 
-    const last = lastRef.current;
-    if (!last) return;
+    const ro = new ResizeObserver(() => {
+      const r = el.getBoundingClientRect();
+      setSize({ w: Math.floor(r.width), h: Math.floor(r.height) });
+    });
 
-    const dx = e.clientX - last.x;
-    const dy = e.clientY - last.y;
+    ro.observe(el);
 
-    el.scrollLeft -= dx;
-    el.scrollTop -= dy;
+    const r = el.getBoundingClientRect();
+    setSize({ w: Math.floor(r.width), h: Math.floor(r.height) });
 
-    lastRef.current = { x: e.clientX, y: e.clientY };
-    e.preventDefault();
-  }
+    return () => ro.disconnect();
+  }, [ref, enabled]);
 
-  function onPointerUp(e: React.PointerEvent) {
-    if (!draggingRef.current) return;
-    draggingRef.current = false;
-    lastRef.current = null;
-
-    try {
-      (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
-    } catch {
-      // ignore
-    }
-    e.preventDefault();
-  }
-
-  function onContextMenu(e: React.MouseEvent) {
-    e.preventDefault();
-  }
-
-  return { onPointerDown, onPointerMove, onPointerUp, onContextMenu };
+  return size;
 }
 
-function centerScroll(el: HTMLDivElement | null) {
-  if (!el) return;
-  if (el.scrollWidth <= el.clientWidth && el.scrollHeight <= el.clientHeight) return;
-  el.scrollLeft = Math.max(0, (el.scrollWidth - el.clientWidth) / 2);
-  el.scrollTop = Math.max(0, (el.scrollHeight - el.clientHeight) / 2);
-}
-
-type Tool = "select" | "pan" | "line" | "area" | "count";
-
-type TakeoffWorkspaceContentProps = {
-  projectId: string;
-  embedded?: boolean; // when shown inside ProjectDetails tabs
-};
-
+/**
+ * Takeoff workspace content.
+ * - embedded: used inside ProjectDetails tab (no AppLayout wrapper, no duplicate heading)
+ * - standalone (default export): used on /projects/:projectId/takeoff route
+ */
 export function TakeoffWorkspaceContent({
   projectId,
-  embedded = true,
-}: TakeoffWorkspaceContentProps) {
+  embedded = false,
+}: {
+  projectId: string;
+  embedded?: boolean;
+}) {
   const navigate = useNavigate();
 
+  // ----------------------------
+  // Layout / panels
+  // ----------------------------
   const [leftOpen, setLeftOpen] = useState(true);
   const [rightOpen, setRightOpen] = useState(true);
 
-  const [tool, setTool] = useState<Tool>("select");
-
-  // Scale display (button becomes text)
+  // ----------------------------
+  // Scale (Option B UI behaviour)
+  // ----------------------------
   const [scaleText, setScaleText] = useState<string | null>(null);
-  const scaleTitle = scaleText ? "Rescale?" : "Set scale";
+  const scaleTitle = scaleText ? "Rescale?" : "Scale";
+  const scaleButtonLabel = scaleText ?? "Scale";
 
-  // pdf state
-  const [selectedDocId, setSelectedDocId] = useState<string>("");
-  const [signedUrl, setSignedUrl] = useState<string>("");
-  const [pdfDoc, setPdfDoc] = useState<any | null>(null);
+  function onScaleClick() {
+    if (scaleText) {
+      const ok = window.confirm("Replace existing scale?");
+      if (!ok) return;
+    }
+    const next = window.prompt(
+      "Enter drawing scale (e.g., 1:100, 1/4\"=1'-0\"):",
+      scaleText ?? ""
+    );
+    if (!next) return;
+    const trimmed = next.trim();
+    if (!trimmed) return;
+    setScaleText(trimmed);
+    toast({ title: "Scale set", description: trimmed });
+  }
 
-  const [viewPage, setViewPage] = useState<number>(1);
-  const [rotation, setRotation] = useState<number>(0);
-  const [zoom, setZoom] = useState<number>(1.0);
-
-  // sizing
-  const [viewportPx, setViewportPx] = useState<{ width: number; height: number }>({
-    width: 1,
-    height: 1,
-  });
-
-  const viewerBoxRef = useRef<HTMLDivElement | null>(null);
-  const scrollRef = useRef<HTMLDivElement | null>(null);
-
-  // base size at scale=1 derived from viewport/zoom
-  const baseSizeRef = useRef<{ w: number; h: number } | null>(null);
-
-  // Fit-to-page behavior
-  const [fitPending, setFitPending] = useState<boolean>(true);
-
-  // Wheel-zoom anchor (keep zoom around cursor point)
-  const wheelAnchorRef = useRef<{
-    targetZoom: number;
-    nx: number;
-    ny: number;
-    ox: number;
-    oy: number;
-  } | null>(null);
-
-  const pan = useDragPan(scrollRef, tool === "pan");
-
+  // ----------------------------
+  // Project, documents, pages
+  // ----------------------------
   const { data: project } = useQuery({
     queryKey: ["project", projectId],
     enabled: !!projectId,
     queryFn: async () => {
       const { data, error } = await supabase
         .from("projects")
-        .select("id,name,client_name,status")
+        .select("id,name,status")
         .eq("id", projectId)
         .single();
       if (error) throw error;
@@ -293,7 +136,7 @@ export function TakeoffWorkspaceContent({
     },
   });
 
-  const { data: documents } = useQuery({
+  const { data: documents = [] } = useQuery({
     queryKey: ["project-documents", projectId],
     enabled: !!projectId,
     queryFn: async () => {
@@ -307,67 +150,133 @@ export function TakeoffWorkspaceContent({
     },
   });
 
+  const [activeDocId, setActiveDocId] = useState<string | null>(null);
   useEffect(() => {
-    if (!documents?.length) return;
-    if (selectedDocId) return;
-    setSelectedDocId(documents[0].id);
-  }, [documents, selectedDocId]);
+    if (activeDocId) return;
+    if (documents.length) setActiveDocId(documents[0].id);
+  }, [documents, activeDocId]);
 
-  const selectedDoc = useMemo(() => {
-    if (!documents?.length) return null;
-    return documents.find((d) => d.id === selectedDocId) ?? null;
-  }, [documents, selectedDocId]);
+  const activeDoc = useMemo(
+    () => documents.find((d) => d.id === activeDocId) ?? null,
+    [documents, activeDocId]
+  );
 
-  const { data: pages } = useQuery({
-    queryKey: ["document-pages", selectedDocId],
-    enabled: !!selectedDocId,
+  const { data: pages = [] } = useQuery({
+    queryKey: ["document_pages", activeDocId],
+    enabled: !!activeDocId,
     queryFn: async () => {
       const { data, error } = await supabase
         .from("document_pages")
-        .select("id,document_id,project_id,owner_id,page_number,page_name")
-        .eq("document_id", selectedDocId)
+        .select("id,document_id,page_number,label")
+        .eq("document_id", activeDocId)
         .order("page_number", { ascending: true });
       if (error) throw error;
       return (data ?? []) as PageRow[];
     },
   });
 
-  const pageCount = pages?.length ?? 0;
+  // ----------------------------
+  // PDF state
+  // ----------------------------
+  const [pdfDoc, setPdfDoc] = useState<PDFDocumentProxy | null>(null);
+  const [pdfNumPages, setPdfNumPages] = useState(0);
+  const [pageNumber, setPageNumber] = useState(1);
+  const [signedUrl, setSignedUrl] = useState<string>("");
 
-  async function getSignedPdfUrl(d: DocumentRow) {
-    const { data, error } = await supabase.storage
-      .from(d.bucket)
-      .createSignedUrl(d.path, 60 * 10);
-    if (error) throw error;
-    if (!data?.signedUrl) throw new Error("No signed URL returned.");
-    return data.signedUrl;
+  // ----------------------------
+  // Viewer state (fit + zoom + pan + rotate)
+  // ----------------------------
+  const viewerRef = useRef<HTMLDivElement | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const viewerSize = useResizeObserverSize(viewerRef, true);
+
+  const [rotation, setRotation] = useState(0); // 0/90/180/270
+  const [zoom, setZoom] = useState(1); // CSS zoom
+  const [fitMode, setFitMode] = useState(true);
+  const [fitPending, setFitPending] = useState(false);
+
+  const [canvasSize, setCanvasSize] = useState<Size>({ w: 0, h: 0 });
+  const [pan, setPan] = useState<Point>({ x: 0, y: 0 });
+
+  const renderTaskRef = useRef<RenderTask | null>(null);
+
+  function clampPan(next: Point, vs: Size, cs: Size, z: number) {
+    if (vs.w <= 0 || vs.h <= 0 || cs.w <= 0 || cs.h <= 0) return next;
+
+    const scaledW = cs.w * z;
+    const scaledH = cs.h * z;
+
+    const centerX = (vs.w - scaledW) / 2;
+    const centerY = (vs.h - scaledH) / 2;
+
+    if (scaledW <= vs.w) next.x = centerX;
+    else next.x = clamp(next.x, vs.w - scaledW, 0);
+
+    if (scaledH <= vs.h) next.y = centerY;
+    else next.y = clamp(next.y, vs.h - scaledH, 0);
+
+    return next;
   }
 
+  function requestFit() {
+    setFitMode(true);
+    setFitPending(true);
+  }
+
+  // Fit when page changes / rotation changes
+  useEffect(() => {
+    requestFit();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pageNumber, rotation]);
+
+  // Keep pan clamped on resize/zoom
+  useEffect(() => {
+    setPan((p) => clampPan({ ...p }, viewerSize, canvasSize, zoom));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [viewerSize.w, viewerSize.h, canvasSize.w, canvasSize.h, zoom]);
+
+  // ----------------------------
+  // Signed URL + load PDF when activeDoc changes
+  // ----------------------------
   useEffect(() => {
     let cancelled = false;
 
     (async () => {
-      if (!selectedDoc) return;
-
       try {
-        setSignedUrl("");
         setPdfDoc(null);
-        setViewPage(1);
+        setPdfNumPages(0);
+        setSignedUrl("");
+        setPageNumber(1);
         setRotation(0);
-        setZoom(1.0);
-        setFitPending(true);
+        setZoom(1);
+        setFitMode(true);
+        setFitPending(false);
+        setCanvasSize({ w: 0, h: 0 });
+        setPan({ x: 0, y: 0 });
 
-        const url = await getSignedPdfUrl(selectedDoc);
-        if (cancelled) return;
-        setSignedUrl(url);
+        if (!activeDoc) return;
 
-        const pdf = await getDocument(url).promise;
+        const { data, error } = await supabase.storage
+          .from(activeDoc.bucket)
+          .createSignedUrl(activeDoc.path, 60 * 10);
+
+        if (error) throw error;
+        if (!data?.signedUrl) throw new Error("No signed URL returned.");
+
         if (cancelled) return;
+
+        setSignedUrl(data.signedUrl);
+
+        const pdf = await getDocument(data.signedUrl).promise;
+        if (cancelled) return;
+
         setPdfDoc(pdf);
+        setPdfNumPages(pdf.numPages);
+        setPageNumber(1);
       } catch (e: any) {
         if (cancelled) return;
         toast({
-          title: "Failed to load PDF",
+          title: "Failed to open PDF",
           description: e?.message ?? "Unknown error",
           variant: "destructive",
         });
@@ -377,487 +286,429 @@ export function TakeoffWorkspaceContent({
     return () => {
       cancelled = true;
     };
-  }, [selectedDocId]);
+  }, [activeDoc]);
 
-  // Fit on open/page change/layout change
+  // ----------------------------
+  // Render current page to canvas
+  // ----------------------------
   useEffect(() => {
-    setFitPending(true);
-  }, [viewPage, rotation, leftOpen, rightOpen]);
+    let cancelled = false;
 
-  const fitToPage = useCallback(() => {
-    const box = viewerBoxRef.current;
-    const base = baseSizeRef.current;
-    if (!box || !base || base.w <= 1 || base.h <= 1) return;
+    (async () => {
+      try {
+        if (!pdfDoc) return;
+        if (!canvasRef.current) return;
 
-    const padding = 12;
-    const w = Math.max(1, box.clientWidth - padding);
-    const h = Math.max(1, box.clientHeight - padding);
+        const safePage = Math.min(Math.max(1, pageNumber), pdfDoc.numPages);
+        const page = await pdfDoc.getPage(safePage);
 
-    const nextZoom = Math.min(w / base.w, h / base.h);
-    const clamped = Math.max(0.2, Math.min(3.0, Number(nextZoom.toFixed(4))));
+        // Cancel previous task (prevents render stacking)
+        renderTaskRef.current?.cancel();
+        renderTaskRef.current = null;
 
-    setZoom(clamped);
-    setTimeout(() => centerScroll(scrollRef.current), 30);
+        // Quality scale for rendering (actual pixels). Zoom is CSS.
+        const RENDER_SCALE = 1.5;
+        const viewport = page.getViewport({ scale: RENDER_SCALE, rotation });
 
-    setFitPending(false);
-  }, []);
+        const canvas = canvasRef.current!;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return;
 
-  const handleViewport = useCallback(
-    (vp: { width: number; height: number }) => {
-      setViewportPx((prev) =>
-        prev.width === vp.width && prev.height === vp.height ? prev : vp
-      );
+        canvas.width = Math.floor(viewport.width);
+        canvas.height = Math.floor(viewport.height);
+        setCanvasSize({ w: canvas.width, h: canvas.height });
 
-      const z = Math.max(0.01, zoom);
-      baseSizeRef.current = { w: vp.width / z, h: vp.height / z };
+        const task = page.render({ canvasContext: ctx, viewport });
+        renderTaskRef.current = task;
 
-      // apply wheel anchor after render/viewport updates (keeps cursor point stable)
-      const anchor = wheelAnchorRef.current;
-      if (anchor && scrollRef.current && baseSizeRef.current) {
-        const base = baseSizeRef.current;
-        const newW = base.w * anchor.targetZoom;
-        const newH = base.h * anchor.targetZoom;
+        await task.promise;
+        renderTaskRef.current = null;
 
-        scrollRef.current.scrollLeft = Math.max(0, anchor.nx * newW - anchor.ox);
-        scrollRef.current.scrollTop = Math.max(0, anchor.ny * newH - anchor.oy);
+        if (cancelled) return;
 
-        wheelAnchorRef.current = null;
+        // Compute fit zoom when requested
+        if (fitPending && viewerSize.w > 0 && viewerSize.h > 0) {
+          const fitZ = Math.min(viewerSize.w / canvas.width, viewerSize.h / canvas.height);
+          const clampedFitZ = clamp(fitZ, 0.2, 6);
+          setZoom(clampedFitZ);
+          setFitPending(false);
+
+          // Center after fit
+          setPan(() =>
+            clampPan({ x: 0, y: 0 }, viewerSize, { w: canvas.width, h: canvas.height }, clampedFitZ)
+          );
+        } else {
+          setPan((p) => clampPan({ ...p }, viewerSize, { w: canvas.width, h: canvas.height }, zoom));
+        }
+      } catch (e: any) {
+        if (cancelled) return;
+        if (String(e?.name) === "RenderingCancelledException") return;
+        toast({
+          title: "Viewer error",
+          description: e?.message ?? "Failed to render page",
+          variant: "destructive",
+        });
       }
+    })();
 
-      if (fitPending) {
-        requestAnimationFrame(() => fitToPage());
-      }
-    },
+    return () => {
+      cancelled = true;
+      renderTaskRef.current?.cancel();
+      renderTaskRef.current = null;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [zoom, fitPending, fitToPage]
-  );
+  }, [pdfDoc, pageNumber, rotation, fitPending, viewerSize.w, viewerSize.h]);
 
-  const handleViewerError = useCallback((msg: string) => {
-    toast({ title: "Viewer error", description: msg, variant: "destructive" });
-  }, []);
+  // ----------------------------
+  // Pan / zoom handlers
+  // ----------------------------
+  const dragRef = useRef<{ dragging: boolean; startMouse: Point; startPan: Point }>({
+    dragging: false,
+    startMouse: { x: 0, y: 0 },
+    startPan: { x: 0, y: 0 },
+  });
 
-  // Search sheets
-  const [search, setSearch] = useState("");
-  const filteredPages = useMemo(() => {
-    const s = search.trim().toLowerCase();
-    if (!s) return pages ?? [];
-    return (pages ?? []).filter((p) => {
-      const name = (p.page_name ?? `Page ${p.page_number}`).toLowerCase();
-      return name.includes(s);
-    });
-  }, [pages, search]);
-
-  function onScaleClick() {
-    if (!scaleText) {
-      const next = window.prompt("Enter drawing scale (example: 1:100)", "1:100");
-      if (!next) return;
-      setScaleText(next.trim() || null);
-      return;
-    }
-
-    const ok = window.confirm("Rescale? (this will replace the current scale)");
-    if (!ok) return;
-
-    const next = window.prompt("Enter drawing scale (example: 1:100)", scaleText);
-    if (!next) return;
-    setScaleText(next.trim() || null);
+  function stopDrag() {
+    dragRef.current.dragging = false;
   }
 
-  // Wheel zoom (scroll up/down) — only when cursor is over the viewer
-  const onViewerWheel = useCallback(
-    (e: React.WheelEvent) => {
-      if (!scrollRef.current || !baseSizeRef.current) return;
+  useEffect(() => {
+    const up = () => stopDrag();
+    window.addEventListener("mouseup", up);
+    return () => window.removeEventListener("mouseup", up);
+  }, []);
 
-      e.preventDefault();
+  function onMouseDown(e: React.MouseEvent) {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    dragRef.current.dragging = true;
+    dragRef.current.startMouse = { x: e.clientX, y: e.clientY };
+    dragRef.current.startPan = { ...pan };
+  }
 
-      const el = scrollRef.current;
-      const rect = el.getBoundingClientRect();
+  function onMouseMove(e: React.MouseEvent) {
+    if (!dragRef.current.dragging) return;
+    e.preventDefault();
 
-      const ox = e.clientX - rect.left;
-      const oy = e.clientY - rect.top;
+    const dx = e.clientX - dragRef.current.startMouse.x;
+    const dy = e.clientY - dragRef.current.startMouse.y;
 
-      const base = baseSizeRef.current;
-      const oldW = base.w * zoom;
-      const oldH = base.h * zoom;
+    setFitMode(false);
+    setPan(
+      clampPan(
+        { x: dragRef.current.startPan.x + dx, y: dragRef.current.startPan.y + dy },
+        viewerSize,
+        canvasSize,
+        zoom
+      )
+    );
+  }
 
-      const contentX = el.scrollLeft + ox;
-      const contentY = el.scrollTop + oy;
+  function onWheel(e: React.WheelEvent) {
+    e.preventDefault();
 
-      const nx = oldW > 1 ? contentX / oldW : 0.5;
-      const ny = oldH > 1 ? contentY / oldH : 0.5;
+    // wheel down (positive deltaY) -> zoom out
+    const direction = e.deltaY > 0 ? -1 : 1;
+    const step = 0.08;
 
-      const dir = e.deltaY < 0 ? 1 : -1;
-      const step = 0.08;
+    const nextZoom = clamp(Number((zoom * (1 + direction * step)).toFixed(3)), 0.2, 6.0);
+    setFitMode(false);
 
-      const nextZoom = Math.max(
-        0.2,
-        Math.min(3.0, Number((zoom * (1 + dir * step)).toFixed(4)))
-      );
+    // Zoom around cursor
+    const rect = (viewerRef.current ?? e.currentTarget).getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
 
-      wheelAnchorRef.current = { targetZoom: nextZoom, nx, ny, ox, oy };
-      setZoom(nextZoom);
-    },
-    [zoom]
-  );
+    const beforeX = (mx - pan.x) / zoom;
+    const beforeY = (my - pan.y) / zoom;
 
-  // hide scrollbars but keep scrolling
-  const hideScrollbarStyle: React.CSSProperties = {
-    scrollbarWidth: "none",
-    msOverflowStyle: "none",
-  };
+    const nextPan: Point = {
+      x: mx - beforeX * nextZoom,
+      y: my - beforeY * nextZoom,
+    };
 
-  // IMPORTANT: do NOT lock body scroll here (you want to scroll down to enlarge workspace)
+    setZoom(nextZoom);
+    setPan(() => clampPan(nextPan, viewerSize, canvasSize, nextZoom));
+  }
+
+  // ----------------------------
+  // Sheets + page list UI
+  // ----------------------------
+  const [sheetSearch, setSheetSearch] = useState("");
+
+  const effectivePages = useMemo(() => {
+    const fallbackCount = pdfNumPages || 0;
+
+    const byNumber = new Map<number, PageRow>();
+    for (const p of pages) byNumber.set(p.page_number, p);
+
+    const count = fallbackCount || Math.max(0, ...pages.map((p) => p.page_number), 0);
+
+    const out: { page: number; label: string }[] = [];
+    for (let i = 1; i <= count; i++) {
+      const row = byNumber.get(i);
+      out.push({ page: i, label: row?.label?.trim() || `Page ${i}` });
+    }
+
+    const q = sheetSearch.trim().toLowerCase();
+    if (!q) return out;
+    return out.filter((x) => x.label.toLowerCase().includes(q) || String(x.page).includes(q));
+  }, [pages, pdfNumPages, sheetSearch]);
 
   return (
-    <>
-      {/* local css for webkit scrollbar */}
-      <style>{`
-        .no-scrollbar::-webkit-scrollbar { display: none; }
-      `}</style>
-
-      {/* Header strip inside workspace */}
-      <div className="flex items-center justify-between gap-3">
-        <div className="min-w-0">
-          <div className="text-lg font-semibold truncate">{project?.name ?? "Takeoff"}</div>
-          <div className="mt-0.5 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-            <Badge variant="secondary">Takeoff</Badge>
-            {selectedDoc ? (
-              <>
-                <span>•</span>
-                <span className="truncate">{selectedDoc.file_name}</span>
-                <span>•</span>
-                <span>
-                  Page {viewPage}
-                  {pageCount ? ` / ${pageCount}` : ""}
-                </span>
-              </>
-            ) : null}
+    <div className="h-full w-full bg-muted/20 overflow-hidden">
+      {/* Standalone-only compact title row (prevents “double heading” when embedded) */}
+      {!embedded ? (
+        <div className="flex items-center justify-between gap-3 border-b bg-background px-4 py-2">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <div className="font-semibold truncate">{project?.name ?? "Takeoff"}</div>
+              {project?.status ? <Badge variant="secondary">{STATUS_LABELS[project.status]}</Badge> : null}
+              <span className="text-xs text-muted-foreground truncate">
+                {activeDoc?.file_name ? `• ${activeDoc.file_name}` : ""}
+              </span>
+            </div>
           </div>
-        </div>
 
-        <div className="flex gap-2 flex-none">
-          {!embedded ? (
-            <Button variant="outline" onClick={() => navigate(`/projects/${projectId}`)}>
-              Back
-            </Button>
-          ) : null}
-
-          <Button variant="outline" title={scaleTitle} onClick={onScaleClick}>
-            {scaleText ? `Scale: ${scaleText}` : "Scale"}
+          <Button variant="outline" size="sm" onClick={() => navigate(`/projects/${projectId}`)}>
+            Back to project
           </Button>
         </div>
-      </div>
+      ) : null}
 
-      {/* Workspace - make it fill the viewport width */}
-      <div className="mt-3">
-        <div className="grid grid-cols-12 gap-3">
-          {/* Left panel (Sheets) */}
-          {leftOpen ? (
-            <Card className="col-span-12 lg:col-span-3 p-2 overflow-hidden flex flex-col">
-              <div className="flex items-center justify-between">
-                <div className="text-sm font-medium">Sheets</div>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setLeftOpen(false)}
-                  title="Hide sheets"
-                >
-                  {"<<"}
-                </Button>
-              </div>
-
-              <div className="mt-2 space-y-2">
-                <div className="text-[11px] text-muted-foreground">Document</div>
-                <select
-                  className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
-                  value={selectedDocId}
-                  onChange={(e) => setSelectedDocId(e.target.value)}
-                >
-                  {(documents ?? []).map((d) => (
-                    <option key={d.id} value={d.id}>
-                      {d.file_name}
-                    </option>
-                  ))}
-                </select>
-
-                <Input
-                  className="h-9"
-                  placeholder="Search sheets…"
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                />
-
-                <div className="text-[11px] text-muted-foreground">
-                  {pageCount ? `${pageCount} page(s)` : "No pages in DB yet"}
-                </div>
-              </div>
-
-              <div
-                className="mt-2 flex-1 overflow-auto rounded-lg border border-border no-scrollbar"
-                style={hideScrollbarStyle}
-              >
-                <div className="divide-y">
-                  {filteredPages.length ? (
-                    filteredPages.map((p) => {
-                      const title = p.page_name?.trim() || `Page ${p.page_number}`;
-                      const active = p.page_number === viewPage;
-                      return (
-                        <button
-                          key={p.id}
-                          className={`w-full text-left px-2 py-2 hover:bg-muted/40 ${
-                            active ? "bg-muted/50" : ""
-                          }`}
-                          onClick={() => setViewPage(p.page_number)}
-                        >
-                          <div className="text-sm font-medium truncate">{title}</div>
-                          <div className="text-[11px] text-muted-foreground">#{p.page_number}</div>
-                        </button>
-                      );
-                    })
-                  ) : (
-                    <div className="p-3 text-sm text-muted-foreground">No results.</div>
-                  )}
-                </div>
-              </div>
-            </Card>
-          ) : (
-            <div className="col-span-12 lg:col-span-1 flex items-start">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setLeftOpen(true)}
-                title="Show sheets"
-              >
-                {">>"}
+      {/* Workspace */}
+      <div
+        className={[
+          "grid h-full grid-cols-[auto_1fr_auto] overflow-hidden",
+          embedded ? "" : "h-[calc(100%-41px)]",
+        ].join(" ")}
+      >
+        {/* Left panel */}
+        {leftOpen ? (
+          <div className="w-[280px] border-r bg-background overflow-hidden">
+            <div className="flex items-center justify-between gap-2 border-b px-3 py-2">
+              <div className="text-sm font-semibold">Sheets</div>
+              <Button variant="ghost" size="sm" onClick={() => setLeftOpen(false)} title="Hide sheets">
+                {"<<"}
               </Button>
             </div>
-          )}
 
-          {/* Center viewer */}
-          <Card
-            className={`p-2 overflow-hidden flex flex-col ${
-              leftOpen && rightOpen
-                ? "col-span-12 lg:col-span-6"
-                : leftOpen || rightOpen
-                ? "col-span-12 lg:col-span-8"
-                : "col-span-12 lg:col-span-10"
-            }`}
-          >
-            {/* Toolbar */}
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="flex flex-wrap gap-2">
-                <Button
-                  variant={tool === "select" ? "default" : "outline"}
-                  size="sm"
-                  onClick={() => setTool("select")}
+            <div className="p-3 space-y-3">
+              <div className="space-y-2">
+                <div className="text-xs font-semibold text-muted-foreground">Document</div>
+                <select
+                  className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
+                  value={activeDocId ?? ""}
+                  onChange={(e) => setActiveDocId(e.target.value || null)}
                 >
-                  Select
-                </Button>
-                <Button
-                  variant={tool === "pan" ? "default" : "outline"}
-                  size="sm"
-                  onClick={() => setTool("pan")}
-                >
-                  Pan
-                </Button>
-                <Button variant={tool === "line" ? "default" : "outline"} size="sm" disabled>
-                  Line
-                </Button>
-                <Button variant={tool === "area" ? "default" : "outline"} size="sm" disabled>
-                  Area
-                </Button>
-                <Button variant={tool === "count" ? "default" : "outline"} size="sm" disabled>
-                  Count
-                </Button>
+                  {documents.length ? (
+                    documents.map((d) => (
+                      <option key={d.id} value={d.id}>
+                        {d.file_name}
+                      </option>
+                    ))
+                  ) : (
+                    <option value="">No documents</option>
+                  )}
+                </select>
               </div>
 
-              <div className="flex flex-wrap gap-2 justify-end">
+              <Input placeholder="Search sheets..." value={sheetSearch} onChange={(e) => setSheetSearch(e.target.value)} />
+              <div className="text-xs text-muted-foreground">{effectivePages.length} page(s)</div>
+            </div>
+
+            <div className="h-[calc(100%-156px)] overflow-auto no-scrollbar">
+              <div className="divide-y">
+                {effectivePages.map((p) => (
+                  <button
+                    key={p.page}
+                    className={[
+                      "w-full px-3 py-2 text-left hover:bg-muted/50",
+                      pageNumber === p.page ? "bg-muted/50" : "",
+                    ].join(" ")}
+                    onClick={() => setPageNumber(p.page)}
+                  >
+                    <div className="text-sm font-medium truncate">{p.label}</div>
+                    <div className="text-xs text-muted-foreground">#{p.page}</div>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="border-r bg-background flex items-start">
+            <Button variant="ghost" size="sm" className="m-2" onClick={() => setLeftOpen(true)} title="Show sheets">
+              {">>"}
+            </Button>
+          </div>
+        )}
+
+        {/* Center viewer */}
+        <div className="bg-muted/20 overflow-hidden">
+          {/* Toolbar (no extra heading / no white card) */}
+          <div className="border-b bg-background px-3 py-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="flex items-center gap-2">
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={() => setViewPage((p) => Math.max(1, p - 1))}
-                  disabled={viewPage <= 1}
-                  title="Previous page"
+                  onClick={() => setPageNumber((p) => Math.max(1, p - 1))}
+                  disabled={!pdfNumPages || pageNumber <= 1}
                 >
                   ◀
                 </Button>
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={() =>
-                    setViewPage((p) => (pageCount ? Math.min(pageCount, p + 1) : p + 1))
-                  }
-                  disabled={pageCount ? viewPage >= pageCount : false}
-                  title="Next page"
+                  onClick={() => setPageNumber((p) => Math.min(pdfNumPages || p + 1, p + 1))}
+                  disabled={!pdfNumPages || pageNumber >= pdfNumPages}
                 >
                   ▶
                 </Button>
-
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setZoom((z) => Math.max(0.2, Number((z - 0.1).toFixed(2))))}
-                  title="Zoom out"
-                >
-                  -
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setZoom((z) => Math.min(3.0, Number((z + 0.1).toFixed(2))))}
-                  title="Zoom in"
-                >
-                  +
-                </Button>
-
-                <Button variant="outline" size="sm" onClick={() => setFitPending(true)}>
-                  Fit
-                </Button>
-
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setRotation((r) => (r + 90) % 360)}
-                >
-                  Rotate
-                </Button>
-
-                <Badge variant="secondary">{Math.round(zoom * 100)}%</Badge>
-              </div>
-            </div>
-
-            {/* Viewer - DO NOT force a fixed height; let it expand when you scroll the page */}
-            <div className="mt-2">
-              <div
-                ref={viewerBoxRef}
-                className="rounded-xl border border-border bg-muted/10 overflow-hidden"
-                style={{
-                  // This makes the viewer big, but still allows the page to scroll to “enlarge” focus
-                  minHeight: embedded ? "70vh" : "80vh",
-                }}
-              >
-                <div
-                  ref={scrollRef}
-                  className="h-full w-full overflow-auto no-scrollbar"
-                  style={hideScrollbarStyle}
-                  onPointerDown={pan.onPointerDown}
-                  onPointerMove={pan.onPointerMove}
-                  onPointerUp={pan.onPointerUp}
-                  onContextMenu={pan.onContextMenu}
-                  onWheel={onViewerWheel}
-                >
-                  <div className="p-1">
-                    <div
-                      className="relative inline-block"
-                      style={{ width: viewportPx.width, height: viewportPx.height }}
-                    >
-                      {!signedUrl || !pdfDoc ? (
-                        <div className="absolute inset-0 flex items-center justify-center text-sm text-muted-foreground">
-                          {documents?.length
-                            ? "Loading document…"
-                            : "Upload a PDF in Documents tab first."}
-                        </div>
-                      ) : (
-                        <PdfCanvasViewer
-                          pdfDoc={pdfDoc}
-                          pageNumber={viewPage}
-                          scale={zoom}
-                          rotation={rotation}
-                          onViewport={handleViewport}
-                          onError={handleViewerError}
-                        />
-                      )}
-                    </div>
-                  </div>
-                </div>
               </div>
 
-              <div className="mt-1 text-[11px] text-muted-foreground">
-                Wheel = zoom • Pan: {tool === "pan" ? "left-drag or right-drag" : "right-drag"}
-              </div>
-            </div>
-          </Card>
+              <div className="h-6 w-px bg-border" />
 
-          {/* Right panel (Properties) */}
-          {rightOpen ? (
-            <Card className="col-span-12 lg:col-span-3 p-2 overflow-hidden flex flex-col">
-              <div className="flex items-center justify-between">
-                <div className="text-sm font-medium">Properties</div>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setRightOpen(false)}
-                  title="Hide properties"
-                >
-                  {">>"}
-                </Button>
-              </div>
-
-              <div className="mt-2 space-y-2 overflow-auto no-scrollbar" style={hideScrollbarStyle}>
-                <div className="rounded-lg border border-border p-3">
-                  <div className="text-sm font-medium">Drawing Scale</div>
-                  <div className="text-xs text-muted-foreground">
-                    {scaleText ? `Current: ${scaleText}` : "Not defined yet"}
-                  </div>
-                </div>
-
-                <div className="rounded-lg border border-border p-3">
-                  <div className="text-sm font-medium">Selected</div>
-                  <div className="text-xs text-muted-foreground">
-                    {tool === "select" ? "No selection (tools coming next)" : "Tool active"}
-                  </div>
-                </div>
-
-                <div className="rounded-lg border border-border p-3">
-                  <div className="text-sm font-medium">Quick actions</div>
-                  <div className="mt-2 flex gap-2">
-                    <Button variant="outline" size="sm" disabled>
-                      Undo
-                    </Button>
-                    <Button variant="outline" size="sm" disabled>
-                      Redo
-                    </Button>
-                  </div>
-                </div>
-              </div>
-            </Card>
-          ) : (
-            <div className="col-span-12 lg:col-span-1 flex items-start justify-end">
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => setRightOpen(true)}
-                title="Show properties"
+                onClick={() => {
+                  setFitMode(false);
+                  setZoom((z) => clamp(Number((z * 0.9).toFixed(3)), 0.2, 6));
+                }}
               >
-                {"<<"}
+                -
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setFitMode(false);
+                  setZoom((z) => clamp(Number((z * 1.1).toFixed(3)), 0.2, 6));
+                }}
+              >
+                +
+              </Button>
+
+              <Button variant="outline" size="sm" onClick={requestFit}>
+                Fit
+              </Button>
+
+              <Button variant="outline" size="sm" onClick={() => setRotation((r) => (r + 90) % 360)}>
+                Rotate
+              </Button>
+
+              <div className="ml-auto flex items-center gap-3">
+                <div className="text-xs text-muted-foreground">
+                  {fitMode ? "Fit" : `${Math.round(zoom * 100)}%`} • Wheel to zoom
+                </div>
+
+                <Button variant={scaleText ? "outline" : "default"} size="sm" onClick={onScaleClick} title={scaleTitle}>
+                  {scaleButtonLabel}
+                </Button>
+              </div>
+            </div>
+          </div>
+
+          {/* Viewer */}
+          <div className="h-[calc(100%-44px)] p-0">
+            <div
+              ref={viewerRef}
+              className="h-full w-full overflow-hidden bg-white relative select-none"
+              onContextMenu={(e) => e.preventDefault()}
+              onMouseDown={onMouseDown}
+              onMouseMove={onMouseMove}
+              onMouseUp={stopDrag}
+              onMouseLeave={stopDrag}
+              onWheel={onWheel}
+            >
+              {!signedUrl || !pdfDoc ? (
+                <div className="absolute inset-0 flex items-center justify-center text-sm text-muted-foreground">
+                  {activeDoc ? "Loading PDF…" : "Upload a PDF in Documents to start takeoff."}
+                </div>
+              ) : (
+                <div className="absolute inset-0 overflow-hidden">
+                  <div
+                    style={{
+                      transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
+                      transformOrigin: "top left",
+                      width: `${canvasSize.w}px`,
+                      height: `${canvasSize.h}px`,
+                    }}
+                  >
+                    <canvas ref={canvasRef} className="block bg-white" />
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Right panel */}
+        {rightOpen ? (
+          <div className="w-[320px] border-l bg-background overflow-hidden">
+            <div className="flex items-center justify-between gap-2 border-b px-3 py-2">
+              <div className="text-sm font-semibold">Properties</div>
+              <Button variant="ghost" size="sm" onClick={() => setRightOpen(false)} title="Hide properties">
+                {">>"}
               </Button>
             </div>
-          )}
-        </div>
+
+            <div className="h-[calc(100%-44px)] overflow-auto no-scrollbar p-3 space-y-3">
+              <div className="rounded-lg border p-3">
+                <div className="text-xs font-semibold text-muted-foreground">Drawing Scale</div>
+                <div className="mt-1 text-sm">{scaleText ?? "Not defined yet"}</div>
+                <div className="mt-2">
+                  <Button size="sm" variant="outline" onClick={onScaleClick} title={scaleTitle}>
+                    {scaleText ? "Rescale" : "Set scale"}
+                  </Button>
+                </div>
+              </div>
+
+              <div className="rounded-lg border p-3">
+                <div className="text-xs font-semibold text-muted-foreground">Selected</div>
+                <div className="mt-1 text-sm text-muted-foreground">None (tools coming next)</div>
+              </div>
+
+              <div className="rounded-lg border p-3">
+                <div className="text-xs font-semibold text-muted-foreground">Quick actions</div>
+                <div className="mt-2 flex gap-2">
+                  <Button size="sm" variant="outline" disabled>
+                    Undo
+                  </Button>
+                  <Button size="sm" variant="outline" disabled>
+                    Redo
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="border-l bg-background flex items-start">
+            <Button variant="ghost" size="sm" className="m-2" onClick={() => setRightOpen(true)} title="Show properties">
+              {"<<"}
+            </Button>
+          </div>
+        )}
       </div>
-    </>
+    </div>
   );
 }
 
-/**
- * Standalone route page: /projects/:projectId/takeoff
- * Keeps AppLayout ONLY here.
- */
-export default function TakeoffWorkspacePage() {
+export default function TakeoffWorkspace() {
   const { projectId } = useParams();
+
   if (!projectId) {
     return (
       <AppLayout>
-        <Card className="p-6">Missing project id.</Card>
+        <div className="p-6">Missing projectId</div>
       </AppLayout>
     );
   }
 
   return (
-    <AppLayout>
-      <div className="space-y-4">
-        <TakeoffWorkspaceContent projectId={projectId} embedded={false} />
-      </div>
+    <AppLayout mode="takeoff">
+      <TakeoffWorkspaceContent projectId={projectId} />
     </AppLayout>
   );
 }
