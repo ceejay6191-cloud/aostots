@@ -376,9 +376,10 @@ export default function ProjectDetails() {
             <div className="min-w-0">
               <div className="flex flex-wrap items-end gap-3">
                 <div className="min-w-0">
-                  <div className="text-2xl font-display font-bold tracking-tight truncate">
+                  <div className="text-2xl font-display font-bold tracking-tight">
                     {project.name}
                   </div>
+                
                   <div className="mt-1 flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
                     <Badge variant="secondary">{STATUS_LABELS[project.status]}</Badge>
                     <span>•</span>
@@ -395,8 +396,7 @@ export default function ProjectDetails() {
                       </>
                     ) : null}
                   </div>
-                </div>
-
+                    <div className="mt-3">
                 <TabsList className="bg-transparent p-0 flex flex-wrap gap-2">
                   <TabsTrigger value="overview">Overview</TabsTrigger>
                   <TabsTrigger value="documents">Documents</TabsTrigger>
@@ -404,6 +404,8 @@ export default function ProjectDetails() {
                   <TabsTrigger value="estimating">Estimating</TabsTrigger>
                   <TabsTrigger value="proposal">Proposal</TabsTrigger>
                 </TabsList>
+                </div>
+                </div>
               </div>
             </div>
 

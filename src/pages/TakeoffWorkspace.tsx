@@ -4,6 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 
 // UI
 import { AppLayout } from "@/components/layout/AppLayout";
+import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -78,7 +79,7 @@ function useResizeObserverSize(ref: React.RefObject<HTMLElement>, enabled: boole
 
 /**
  * Takeoff workspace content.
- * - embedded: used inside ProjectDetails tab (no AppLayout wrapper, no duplicate heading)
+ * - embedded: used inside ProjectDetails tab (NO AppLayout wrapper, NO duplicate header)
  * - standalone (default export): used on /projects/:projectId/takeoff route
  */
 export function TakeoffWorkspaceContent({
@@ -90,18 +91,13 @@ export function TakeoffWorkspaceContent({
 }) {
   const navigate = useNavigate();
 
-  // ----------------------------
-  // Layout / panels
-  // ----------------------------
+  // Panels
   const [leftOpen, setLeftOpen] = useState(true);
   const [rightOpen, setRightOpen] = useState(true);
 
-  // ----------------------------
-  // Scale (Option B UI behaviour)
-  // ----------------------------
+  // Scale (kept in Properties only; NOT on top header)
   const [scaleText, setScaleText] = useState<string | null>(null);
   const scaleTitle = scaleText ? "Rescale?" : "Scale";
-  const scaleButtonLabel = scaleText ?? "Scale";
 
   function onScaleClick() {
     if (scaleText) {
@@ -119,9 +115,7 @@ export function TakeoffWorkspaceContent({
     toast({ title: "Scale set", description: trimmed });
   }
 
-  // ----------------------------
   // Project, documents, pages
-  // ----------------------------
   const { data: project } = useQuery({
     queryKey: ["project", projectId],
     enabled: !!projectId,
@@ -175,24 +169,19 @@ export function TakeoffWorkspaceContent({
     },
   });
 
-  // ----------------------------
   // PDF state
-  // ----------------------------
   const [pdfDoc, setPdfDoc] = useState<PDFDocumentProxy | null>(null);
   const [pdfNumPages, setPdfNumPages] = useState(0);
   const [pageNumber, setPageNumber] = useState(1);
   const [signedUrl, setSignedUrl] = useState<string>("");
 
-  // ----------------------------
   // Viewer state (fit + zoom + pan + rotate)
-  // ----------------------------
   const viewerRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const viewerSize = useResizeObserverSize(viewerRef, true);
 
   const [rotation, setRotation] = useState(0); // 0/90/180/270
   const [zoom, setZoom] = useState(1); // CSS zoom
-  const [fitMode, setFitMode] = useState(true);
   const [fitPending, setFitPending] = useState(false);
 
   const [canvasSize, setCanvasSize] = useState<Size>({ w: 0, h: 0 });
@@ -219,11 +208,10 @@ export function TakeoffWorkspaceContent({
   }
 
   function requestFit() {
-    setFitMode(true);
     setFitPending(true);
   }
 
-  // Fit when page changes / rotation changes
+  // Always fit on page/rotation change (default fit-to-page)
   useEffect(() => {
     requestFit();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -235,9 +223,7 @@ export function TakeoffWorkspaceContent({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [viewerSize.w, viewerSize.h, canvasSize.w, canvasSize.h, zoom]);
 
-  // ----------------------------
   // Signed URL + load PDF when activeDoc changes
-  // ----------------------------
   useEffect(() => {
     let cancelled = false;
 
@@ -249,7 +235,6 @@ export function TakeoffWorkspaceContent({
         setPageNumber(1);
         setRotation(0);
         setZoom(1);
-        setFitMode(true);
         setFitPending(false);
         setCanvasSize({ w: 0, h: 0 });
         setPan({ x: 0, y: 0 });
@@ -273,6 +258,9 @@ export function TakeoffWorkspaceContent({
         setPdfDoc(pdf);
         setPdfNumPages(pdf.numPages);
         setPageNumber(1);
+
+        // initial fit when doc loads
+        setFitPending(true);
       } catch (e: any) {
         if (cancelled) return;
         toast({
@@ -288,9 +276,7 @@ export function TakeoffWorkspaceContent({
     };
   }, [activeDoc]);
 
-  // ----------------------------
   // Render current page to canvas
-  // ----------------------------
   useEffect(() => {
     let cancelled = false;
 
@@ -326,19 +312,35 @@ export function TakeoffWorkspaceContent({
 
         if (cancelled) return;
 
-        // Compute fit zoom when requested
+        // Fit zoom when requested
         if (fitPending && viewerSize.w > 0 && viewerSize.h > 0) {
-          const fitZ = Math.min(viewerSize.w / canvas.width, viewerSize.h / canvas.height);
-          const clampedFitZ = clamp(fitZ, 0.2, 6);
-          setZoom(clampedFitZ);
-          setFitPending(false);
+          const fitZ = Math.min(
+            viewerSize.w / canvas.width,
+            viewerSize.h / canvas.height
+          );
+          const clampedFit = clamp(fitZ, 0.2, 6);
+          setZoom(clampedFit);
 
           // Center after fit
           setPan(() =>
-            clampPan({ x: 0, y: 0 }, viewerSize, { w: canvas.width, h: canvas.height }, clampedFitZ)
+            clampPan(
+              { x: 0, y: 0 },
+              viewerSize,
+              { w: canvas.width, h: canvas.height },
+              clampedFit
+            )
           );
+
+          setFitPending(false);
         } else {
-          setPan((p) => clampPan({ ...p }, viewerSize, { w: canvas.width, h: canvas.height }, zoom));
+          setPan((p) =>
+            clampPan(
+              { ...p },
+              viewerSize,
+              { w: canvas.width, h: canvas.height },
+              zoom
+            )
+          );
         }
       } catch (e: any) {
         if (cancelled) return;
@@ -359,10 +361,12 @@ export function TakeoffWorkspaceContent({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pdfDoc, pageNumber, rotation, fitPending, viewerSize.w, viewerSize.h]);
 
-  // ----------------------------
-  // Pan / zoom handlers
-  // ----------------------------
-  const dragRef = useRef<{ dragging: boolean; startMouse: Point; startPan: Point }>({
+  // Pan handlers
+  const dragRef = useRef<{
+    dragging: boolean;
+    startMouse: Point;
+    startPan: Point;
+  }>({
     dragging: false,
     startMouse: { x: 0, y: 0 },
     startPan: { x: 0, y: 0 },
@@ -393,7 +397,6 @@ export function TakeoffWorkspaceContent({
     const dx = e.clientX - dragRef.current.startMouse.x;
     const dy = e.clientY - dragRef.current.startMouse.y;
 
-    setFitMode(false);
     setPan(
       clampPan(
         { x: dragRef.current.startPan.x + dx, y: dragRef.current.startPan.y + dy },
@@ -405,14 +408,18 @@ export function TakeoffWorkspaceContent({
   }
 
   function onWheel(e: React.WheelEvent) {
+    // Wheel zoom over viewer
     e.preventDefault();
 
-    // wheel down (positive deltaY) -> zoom out
+    // deltaY > 0 means scroll down -> zoom OUT
     const direction = e.deltaY > 0 ? -1 : 1;
     const step = 0.08;
 
-    const nextZoom = clamp(Number((zoom * (1 + direction * step)).toFixed(3)), 0.2, 6.0);
-    setFitMode(false);
+    const nextZoom = clamp(
+      Number((zoom * (1 + direction * step)).toFixed(3)),
+      0.2,
+      6.0
+    );
 
     // Zoom around cursor
     const rect = (viewerRef.current ?? e.currentTarget).getBoundingClientRect();
@@ -431,18 +438,16 @@ export function TakeoffWorkspaceContent({
     setPan(() => clampPan(nextPan, viewerSize, canvasSize, nextZoom));
   }
 
-  // ----------------------------
-  // Sheets + page list UI
-  // ----------------------------
+  // Sheets list UI
   const [sheetSearch, setSheetSearch] = useState("");
 
   const effectivePages = useMemo(() => {
     const fallbackCount = pdfNumPages || 0;
-
     const byNumber = new Map<number, PageRow>();
     for (const p of pages) byNumber.set(p.page_number, p);
 
-    const count = fallbackCount || Math.max(0, ...pages.map((p) => p.page_number), 0);
+    const count =
+      fallbackCount || Math.max(0, ...pages.map((p) => p.page_number), 0);
 
     const out: { page: number; label: string }[] = [];
     for (let i = 1; i <= count; i++) {
@@ -452,244 +457,310 @@ export function TakeoffWorkspaceContent({
 
     const q = sheetSearch.trim().toLowerCase();
     if (!q) return out;
-    return out.filter((x) => x.label.toLowerCase().includes(q) || String(x.page).includes(q));
+    return out.filter(
+      (x) => x.label.toLowerCase().includes(q) || String(x.page).includes(q)
+    );
   }, [pages, pdfNumPages, sheetSearch]);
 
-  return (
-    <div className="h-full w-full bg-muted/20 overflow-hidden">
-      {/* Standalone-only compact title row (prevents “double heading” when embedded) */}
-      {!embedded ? (
-        <div className="flex items-center justify-between gap-3 border-b bg-background px-4 py-2">
-          <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <div className="font-semibold truncate">{project?.name ?? "Takeoff"}</div>
-              {project?.status ? <Badge variant="secondary">{STATUS_LABELS[project.status]}</Badge> : null}
-              <span className="text-xs text-muted-foreground truncate">
-                {activeDoc?.file_name ? `• ${activeDoc.file_name}` : ""}
+  // NOTE:
+  // - Embedded mode intentionally shows NO duplicate header.
+  // - Standalone route can show a small header, but still NO scale button.
+  const standaloneHeader = !embedded ? (
+    <div className="flex items-start justify-between gap-3">
+      <div className="min-w-0">
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="font-semibold truncate">{project?.name ?? "Takeoff"}</div>
+          {project?.status ? (
+            <Badge variant="secondary">{STATUS_LABELS[project.status]}</Badge>
+          ) : null}
+        </div>
+
+        <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+          <span className="font-medium">Takeoff</span>
+          <span>•</span>
+          <span className="truncate max-w-[48ch]">
+            {activeDoc?.file_name ?? "No document"}
+          </span>
+          {pdfNumPages ? (
+            <>
+              <span>•</span>
+              <span>
+                Page {pageNumber} / {pdfNumPages}
               </span>
-            </div>
-          </div>
-
-          <Button variant="outline" size="sm" onClick={() => navigate(`/projects/${projectId}`)}>
-            Back to project
-          </Button>
+            </>
+          ) : null}
         </div>
-      ) : null}
+      </div>
 
-      {/* Workspace */}
-      <div
-        className={[
-          "grid h-full grid-cols-[auto_1fr_auto] overflow-hidden",
-          embedded ? "" : "h-[calc(100%-41px)]",
-        ].join(" ")}
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={() => navigate(`/projects/${projectId}`)}
       >
-        {/* Left panel */}
-        {leftOpen ? (
-          <div className="w-[280px] border-r bg-background overflow-hidden">
-            <div className="flex items-center justify-between gap-2 border-b px-3 py-2">
-              <div className="text-sm font-semibold">Sheets</div>
-              <Button variant="ghost" size="sm" onClick={() => setLeftOpen(false)} title="Hide sheets">
-                {"<<"}
-              </Button>
-            </div>
+        Back
+      </Button>
+    </div>
+  ) : null;
 
-            <div className="p-3 space-y-3">
-              <div className="space-y-2">
-                <div className="text-xs font-semibold text-muted-foreground">Document</div>
-                <select
-                  className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
-                  value={activeDocId ?? ""}
-                  onChange={(e) => setActiveDocId(e.target.value || null)}
-                >
-                  {documents.length ? (
-                    documents.map((d) => (
-                      <option key={d.id} value={d.id}>
-                        {d.file_name}
-                      </option>
-                    ))
-                  ) : (
-                    <option value="">No documents</option>
-                  )}
-                </select>
-              </div>
+  return (
+    <div className={embedded ? "h-full w-full" : "w-full"}>
+      {/* Minimal header only in standalone route */}
+      {standaloneHeader ? <div className="mb-3">{standaloneHeader}</div> : null}
 
-              <Input placeholder="Search sheets..." value={sheetSearch} onChange={(e) => setSheetSearch(e.target.value)} />
-              <div className="text-xs text-muted-foreground">{effectivePages.length} page(s)</div>
-            </div>
-
-            <div className="h-[calc(100%-156px)] overflow-auto no-scrollbar">
-              <div className="divide-y">
-                {effectivePages.map((p) => (
-                  <button
-                    key={p.page}
-                    className={[
-                      "w-full px-3 py-2 text-left hover:bg-muted/50",
-                      pageNumber === p.page ? "bg-muted/50" : "",
-                    ].join(" ")}
-                    onClick={() => setPageNumber(p.page)}
-                  >
-                    <div className="text-sm font-medium truncate">{p.label}</div>
-                    <div className="text-xs text-muted-foreground">#{p.page}</div>
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
-        ) : (
-          <div className="border-r bg-background flex items-start">
-            <Button variant="ghost" size="sm" className="m-2" onClick={() => setLeftOpen(true)} title="Show sheets">
-              {">>"}
-            </Button>
-          </div>
-        )}
-
-        {/* Center viewer */}
-        <div className="bg-muted/20 overflow-hidden">
-          {/* Toolbar (no extra heading / no white card) */}
-          <div className="border-b bg-background px-3 py-2">
-            <div className="flex flex-wrap items-center gap-2">
-              <div className="flex items-center gap-2">
+      {/* Workspace: fill available height */}
+      <div className={embedded ? "h-full" : ""}>
+        <div className="grid h-full grid-cols-[auto_1fr_auto] min-h-0">
+          {/* Left panel */}
+          {leftOpen ? (
+            <div className="w-[280px] h-full min-h-0 border-r bg-background">
+              <div className="flex items-center justify-between gap-2 border-b px-3 py-2">
+                <div className="text-sm font-semibold">Sheets</div>
                 <Button
-                  variant="outline"
+                  variant="ghost"
                   size="sm"
-                  onClick={() => setPageNumber((p) => Math.max(1, p - 1))}
-                  disabled={!pdfNumPages || pageNumber <= 1}
+                  onClick={() => setLeftOpen(false)}
+                  title="Hide sheets"
                 >
-                  ◀
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setPageNumber((p) => Math.min(pdfNumPages || p + 1, p + 1))}
-                  disabled={!pdfNumPages || pageNumber >= pdfNumPages}
-                >
-                  ▶
+                  {"<<"}
                 </Button>
               </div>
 
-              <div className="h-6 w-px bg-border" />
-
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  setFitMode(false);
-                  setZoom((z) => clamp(Number((z * 0.9).toFixed(3)), 0.2, 6));
-                }}
-              >
-                -
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  setFitMode(false);
-                  setZoom((z) => clamp(Number((z * 1.1).toFixed(3)), 0.2, 6));
-                }}
-              >
-                +
-              </Button>
-
-              <Button variant="outline" size="sm" onClick={requestFit}>
-                Fit
-              </Button>
-
-              <Button variant="outline" size="sm" onClick={() => setRotation((r) => (r + 90) % 360)}>
-                Rotate
-              </Button>
-
-              <div className="ml-auto flex items-center gap-3">
-                <div className="text-xs text-muted-foreground">
-                  {fitMode ? "Fit" : `${Math.round(zoom * 100)}%`} • Wheel to zoom
-                </div>
-
-                <Button variant={scaleText ? "outline" : "default"} size="sm" onClick={onScaleClick} title={scaleTitle}>
-                  {scaleButtonLabel}
-                </Button>
-              </div>
-            </div>
-          </div>
-
-          {/* Viewer */}
-          <div className="h-[calc(100%-44px)] p-0">
-            <div
-              ref={viewerRef}
-              className="h-full w-full overflow-hidden bg-white relative select-none"
-              onContextMenu={(e) => e.preventDefault()}
-              onMouseDown={onMouseDown}
-              onMouseMove={onMouseMove}
-              onMouseUp={stopDrag}
-              onMouseLeave={stopDrag}
-              onWheel={onWheel}
-            >
-              {!signedUrl || !pdfDoc ? (
-                <div className="absolute inset-0 flex items-center justify-center text-sm text-muted-foreground">
-                  {activeDoc ? "Loading PDF…" : "Upload a PDF in Documents to start takeoff."}
-                </div>
-              ) : (
-                <div className="absolute inset-0 overflow-hidden">
-                  <div
-                    style={{
-                      transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
-                      transformOrigin: "top left",
-                      width: `${canvasSize.w}px`,
-                      height: `${canvasSize.h}px`,
-                    }}
-                  >
-                    <canvas ref={canvasRef} className="block bg-white" />
+              <div className="p-3 space-y-3">
+                <div className="space-y-2">
+                  <div className="text-xs font-semibold text-muted-foreground">
+                    Document
                   </div>
+                  <select
+                    className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
+                    value={activeDocId ?? ""}
+                    onChange={(e) => setActiveDocId(e.target.value || null)}
+                  >
+                    {documents.length ? (
+                      documents.map((d) => (
+                        <option key={d.id} value={d.id}>
+                          {d.file_name}
+                        </option>
+                      ))
+                    ) : (
+                      <option value="">No documents</option>
+                    )}
+                  </select>
                 </div>
-              )}
-            </div>
-          </div>
-        </div>
 
-        {/* Right panel */}
-        {rightOpen ? (
-          <div className="w-[320px] border-l bg-background overflow-hidden">
-            <div className="flex items-center justify-between gap-2 border-b px-3 py-2">
-              <div className="text-sm font-semibold">Properties</div>
-              <Button variant="ghost" size="sm" onClick={() => setRightOpen(false)} title="Hide properties">
+                <Input
+                  placeholder="Search sheets..."
+                  value={sheetSearch}
+                  onChange={(e) => setSheetSearch(e.target.value)}
+                />
+                <div className="text-xs text-muted-foreground">
+                  {effectivePages.length} page(s)
+                </div>
+              </div>
+
+              <div className="h-[calc(100%-156px)] overflow-auto no-scrollbar">
+                <div className="divide-y">
+                  {effectivePages.map((p) => (
+                    <button
+                      key={p.page}
+                      className={[
+                        "w-full px-3 py-2 text-left hover:bg-muted/50",
+                        pageNumber === p.page ? "bg-muted/50" : "",
+                      ].join(" ")}
+                      onClick={() => setPageNumber(p.page)}
+                    >
+                      <div className="text-sm font-medium truncate">{p.label}</div>
+                      <div className="text-xs text-muted-foreground">#{p.page}</div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="w-[44px] h-full border-r bg-background flex items-start">
+              <Button
+                variant="ghost"
+                size="sm"
+                className="m-2"
+                onClick={() => setLeftOpen(true)}
+                title="Show sheets"
+              >
                 {">>"}
               </Button>
             </div>
+          )}
 
-            <div className="h-[calc(100%-44px)] overflow-auto no-scrollbar p-3 space-y-3">
-              <div className="rounded-lg border p-3">
-                <div className="text-xs font-semibold text-muted-foreground">Drawing Scale</div>
-                <div className="mt-1 text-sm">{scaleText ?? "Not defined yet"}</div>
-                <div className="mt-2">
-                  <Button size="sm" variant="outline" onClick={onScaleClick} title={scaleTitle}>
-                    {scaleText ? "Rescale" : "Set scale"}
+          {/* Center viewer */}
+          <div className="h-full min-h-0 bg-muted/20 flex flex-col">
+            {/* Toolbar */}
+            <div className="border-b bg-background px-3 py-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setPageNumber((p) => Math.max(1, p - 1))}
+                    disabled={!pdfNumPages || pageNumber <= 1}
+                  >
+                    ◀
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() =>
+                      setPageNumber((p) => Math.min(pdfNumPages || p + 1, p + 1))
+                    }
+                    disabled={!pdfNumPages || pageNumber >= pdfNumPages}
+                  >
+                    ▶
                   </Button>
                 </div>
-              </div>
 
-              <div className="rounded-lg border p-3">
-                <div className="text-xs font-semibold text-muted-foreground">Selected</div>
-                <div className="mt-1 text-sm text-muted-foreground">None (tools coming next)</div>
-              </div>
+                <div className="h-6 w-px bg-border" />
 
-              <div className="rounded-lg border p-3">
-                <div className="text-xs font-semibold text-muted-foreground">Quick actions</div>
-                <div className="mt-2 flex gap-2">
-                  <Button size="sm" variant="outline" disabled>
-                    Undo
-                  </Button>
-                  <Button size="sm" variant="outline" disabled>
-                    Redo
-                  </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() =>
+                    setZoom((z) => clamp(Number((z * 0.9).toFixed(3)), 0.2, 6))
+                  }
+                >
+                  -
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() =>
+                    setZoom((z) => clamp(Number((z * 1.1).toFixed(3)), 0.2, 6))
+                  }
+                >
+                  +
+                </Button>
+
+                <Button variant="outline" size="sm" onClick={requestFit}>
+                  Fit
+                </Button>
+
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setRotation((r) => (r + 90) % 360)}
+                >
+                  Rotate
+                </Button>
+
+                <div className="ml-auto text-xs text-muted-foreground flex items-center gap-2">
+                  <span>{`${Math.round(zoom * 100)}%`}</span>
+                  <span>•</span>
+                  <span>Wheel to zoom</span>
                 </div>
               </div>
             </div>
+
+            {/* Viewer (fills remaining height) */}
+            <div className="flex-1 min-h-0 p-2">
+              <div
+                ref={viewerRef}
+                className="h-full w-full overflow-hidden rounded-lg border bg-white relative select-none"
+                onContextMenu={(e) => e.preventDefault()}
+                onMouseDown={onMouseDown}
+                onMouseMove={onMouseMove}
+                onMouseUp={stopDrag}
+                onMouseLeave={stopDrag}
+                onWheel={onWheel}
+              >
+                {!signedUrl || !pdfDoc ? (
+                  <div className="absolute inset-0 flex items-center justify-center text-sm text-muted-foreground">
+                    {activeDoc ? "Loading PDF…" : "Upload a PDF in Documents to start takeoff."}
+                  </div>
+                ) : (
+                  <div className="absolute inset-0 overflow-hidden">
+                    <div
+                      style={{
+                        transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
+                        transformOrigin: "top left",
+                        width: `${canvasSize.w}px`,
+                        height: `${canvasSize.h}px`,
+                      }}
+                    >
+                      <canvas ref={canvasRef} className="block bg-white" />
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
           </div>
-        ) : (
-          <div className="border-l bg-background flex items-start">
-            <Button variant="ghost" size="sm" className="m-2" onClick={() => setRightOpen(true)} title="Show properties">
-              {"<<"}
-            </Button>
-          </div>
-        )}
+
+          {/* Right panel */}
+          {rightOpen ? (
+            <div className="w-[320px] h-full min-h-0 border-l bg-background">
+              <div className="flex items-center justify-between gap-2 border-b px-3 py-2">
+                <div className="text-sm font-semibold">Properties</div>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setRightOpen(false)}
+                  title="Hide properties"
+                >
+                  {">>"}
+                </Button>
+              </div>
+
+              <div className="p-3 space-y-3">
+                <div className="rounded-lg border p-3">
+                  <div className="text-xs font-semibold text-muted-foreground">
+                    Drawing Scale
+                  </div>
+                  <div className="mt-1 text-sm">{scaleText ?? "Not defined yet"}</div>
+                  <div className="mt-2">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={onScaleClick}
+                      title={scaleTitle}
+                    >
+                      {scaleText ? "Rescale" : "Set scale"}
+                    </Button>
+                  </div>
+                </div>
+
+                <div className="rounded-lg border p-3">
+                  <div className="text-xs font-semibold text-muted-foreground">
+                    Selected
+                  </div>
+                  <div className="mt-1 text-sm text-muted-foreground">
+                    None (tools coming next)
+                  </div>
+                </div>
+
+                <div className="rounded-lg border p-3">
+                  <div className="text-xs font-semibold text-muted-foreground">
+                    Quick actions
+                  </div>
+                  <div className="mt-2 flex gap-2">
+                    <Button size="sm" variant="outline" disabled>
+                      Undo
+                    </Button>
+                    <Button size="sm" variant="outline" disabled>
+                      Redo
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="w-[44px] h-full border-l bg-background flex items-start">
+              <Button
+                variant="ghost"
+                size="sm"
+                className="m-2"
+                onClick={() => setRightOpen(true)}
+                title="Show properties"
+              >
+                {"<<"}
+              </Button>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -701,14 +772,18 @@ export default function TakeoffWorkspace() {
   if (!projectId) {
     return (
       <AppLayout>
-        <div className="p-6">Missing projectId</div>
+        <Card className="p-6">Missing projectId</Card>
       </AppLayout>
     );
   }
 
+  // Standalone route should maximize height.
+  // If you updated AppLayout with mode="takeoff", use it here.
   return (
-    <AppLayout mode="takeoff">
-      <TakeoffWorkspaceContent projectId={projectId} />
+    <AppLayout>
+      <div className="h-[calc(100vh-72px)] px-[30px] pb-[30px] overflow-hidden">
+        <TakeoffWorkspaceContent projectId={projectId} embedded={false} />
+      </div>
     </AppLayout>
   );
 }
