@@ -64,6 +64,9 @@ export default function ProjectDetails() {
 
   const [activeTab, setActiveTab] = useState<TabKey>("overview");
 
+  // Trigger value used to request "enter calibration mode" inside embedded Takeoff.
+  const [takeoffScaleTrigger, setTakeoffScaleTrigger] = useState(0);
+
   // ------------------------------------------------------------
   // Project query
   // ------------------------------------------------------------
@@ -135,7 +138,9 @@ export default function ProjectDetails() {
 
   const lastSavedKeyRef = useRef<string>("");
   const autosaveTimerRef = useRef<number | null>(null);
-  const [saveState, setSaveState] = useState<"idle" | "saving" | "saved">("idle");
+  const [saveState, setSaveState] = useState<"idle" | "saving" | "saved">(
+    "idle"
+  );
 
   const autosaveMutation = useMutation({
     mutationFn: async (payload: {
@@ -192,7 +197,8 @@ export default function ProjectDetails() {
     // no-op if nothing changed
     if (key === lastSavedKeyRef.current) return;
 
-    if (autosaveTimerRef.current) window.clearTimeout(autosaveTimerRef.current);
+    if (autosaveTimerRef.current)
+      window.clearTimeout(autosaveTimerRef.current);
     setSaveState("saving");
 
     autosaveTimerRef.current = window.setTimeout(() => {
@@ -204,7 +210,8 @@ export default function ProjectDetails() {
     }, 650);
 
     return () => {
-      if (autosaveTimerRef.current) window.clearTimeout(autosaveTimerRef.current);
+      if (autosaveTimerRef.current)
+        window.clearTimeout(autosaveTimerRef.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [form, projectId, project?.id]);
@@ -317,7 +324,6 @@ export default function ProjectDetails() {
     }
 
     const { error: dbErr } = await supabase.from("project_documents").delete().eq("id", doc.id);
-
     if (dbErr) {
       toast({
         title: "Deleted file, but failed to delete record",
@@ -330,13 +336,6 @@ export default function ProjectDetails() {
     toast({ title: "Deleted", description: "Document removed." });
     await qc.invalidateQueries({ queryKey: ["project-documents", projectId] });
   }
-
-  // ------------------------------------------------------------
-  // Scale button UI (top-right on Takeoff tab)
-  // ------------------------------------------------------------
-  const [scaleDefined, setScaleDefined] = useState(false);
-  const scaleButtonLabel = scaleDefined ? "1:100" : "Scale";
-  const scaleButtonTitle = scaleDefined ? "Rescale?" : "Scale";
 
   // ------------------------------------------------------------
   // Loading / error states
@@ -371,15 +370,13 @@ export default function ProjectDetails() {
     <AppLayout fullWidth>
       <Card className="p-4">
         <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as TabKey)}>
-          {/* Header row: title + tabs + (scale on far right) */}
+          {/* Header row: title + tabs + Scale (far right) */}
           <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
             <div className="min-w-0">
               <div className="flex flex-wrap items-end gap-3">
                 <div className="min-w-0">
-                  <div className="text-2xl font-display font-bold tracking-tight">
-                    {project.name}
-                  </div>
-                
+                  <div className="text-2xl font-display font-bold tracking-tight">{project.name}</div>
+
                   <div className="mt-1 flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
                     <Badge variant="secondary">{STATUS_LABELS[project.status]}</Badge>
                     <span>•</span>
@@ -396,34 +393,29 @@ export default function ProjectDetails() {
                       </>
                     ) : null}
                   </div>
-                    <div className="mt-3">
-                <TabsList className="bg-transparent p-0 flex flex-wrap gap-2">
-                  <TabsTrigger value="overview">Overview</TabsTrigger>
-                  <TabsTrigger value="documents">Documents</TabsTrigger>
-                  <TabsTrigger value="takeoff">Takeoff</TabsTrigger>
-                  <TabsTrigger value="estimating">Estimating</TabsTrigger>
-                  <TabsTrigger value="proposal">Proposal</TabsTrigger>
-                </TabsList>
-                </div>
+
+                  <TabsList className="bg-transparent p-0 flex flex-wrap gap-2">
+                    <TabsTrigger value="overview">Overview</TabsTrigger>
+                    <TabsTrigger value="documents">Documents</TabsTrigger>
+                    <TabsTrigger value="takeoff">Takeoff</TabsTrigger>
+                    <TabsTrigger value="estimating">Estimating</TabsTrigger>
+                    <TabsTrigger value="proposal">Proposal</TabsTrigger>
+                  </TabsList>
                 </div>
               </div>
             </div>
 
-            {/* Scale button aligns far right (only on Takeoff tab) */}
+            {/* Scale button only on Takeoff tab */}
             <div className="flex items-center justify-end">
               {activeTab === "takeoff" ? (
                 <Button
                   size="sm"
-                  title={scaleButtonTitle}
+                  title="Calibrate scale"
                   onClick={() => {
-                    setScaleDefined((v) => !v);
-                    toast({
-                      title: scaleDefined ? "Scale cleared" : "Scale",
-                      description: "Scale calibration is coming next.",
-                    });
+                    setTakeoffScaleTrigger((n) => n + 1);
                   }}
                 >
-                  {scaleButtonLabel}
+                  Scale
                 </Button>
               ) : null}
             </div>
@@ -436,10 +428,7 @@ export default function ProjectDetails() {
               <div className="grid gap-4 md:grid-cols-2">
                 <div className="space-y-2">
                   <div className="text-sm font-semibold">Project Name</div>
-                  <Input
-                    value={form.name}
-                    onChange={(e) => setForm((p) => ({ ...p, name: e.target.value }))}
-                  />
+                  <Input value={form.name} onChange={(e) => setForm((p) => ({ ...p, name: e.target.value }))} />
                 </div>
 
                 <div className="space-y-2">
@@ -447,9 +436,7 @@ export default function ProjectDetails() {
                   <select
                     className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
                     value={form.status}
-                    onChange={(e) =>
-                      setForm((p) => ({ ...p, status: e.target.value as ProjectStatus }))
-                    }
+                    onChange={(e) => setForm((p) => ({ ...p, status: e.target.value as ProjectStatus }))}
                   >
                     {statusOptions.map((s) => (
                       <option key={s} value={s}>
@@ -461,31 +448,17 @@ export default function ProjectDetails() {
 
                 <div className="space-y-2">
                   <div className="text-sm font-semibold">Client Name</div>
-                  <Input
-                    value={form.client_name}
-                    onChange={(e) => setForm((p) => ({ ...p, client_name: e.target.value }))}
-                    placeholder="e.g., John Smith"
-                  />
+                  <Input value={form.client_name} onChange={(e) => setForm((p) => ({ ...p, client_name: e.target.value }))} placeholder="e.g., John Smith" />
                 </div>
 
                 <div className="space-y-2">
                   <div className="text-sm font-semibold">Client Email</div>
-                  <Input
-                    value={form.client_email}
-                    onChange={(e) => setForm((p) => ({ ...p, client_email: e.target.value }))}
-                    placeholder="e.g., client@email.com"
-                  />
+                  <Input value={form.client_email} onChange={(e) => setForm((p) => ({ ...p, client_email: e.target.value }))} placeholder="e.g., client@email.com" />
                 </div>
 
                 <div className="space-y-2">
                   <div className="text-sm font-semibold">Estimator</div>
-                  <Input
-                    value={form.estimator_name}
-                    onChange={(e) =>
-                      setForm((p) => ({ ...p, estimator_name: e.target.value }))
-                    }
-                    placeholder="e.g., Ceejay"
-                  />
+                  <Input value={form.estimator_name} onChange={(e) => setForm((p) => ({ ...p, estimator_name: e.target.value }))} placeholder="e.g., Ceejay" />
                 </div>
 
                 <div className="space-y-2">
@@ -495,12 +468,7 @@ export default function ProjectDetails() {
 
                 <div className="space-y-2 md:col-span-2">
                   <div className="text-sm font-semibold">Notes</div>
-                  <Textarea
-                    value={form.notes}
-                    onChange={(e) => setForm((p) => ({ ...p, notes: e.target.value }))}
-                    placeholder="Add internal notes here…"
-                    className="min-h-[120px]"
-                  />
+                  <Textarea value={form.notes} onChange={(e) => setForm((p) => ({ ...p, notes: e.target.value }))} placeholder="Add internal notes here…" className="min-h-[120px]" />
                 </div>
               </div>
             </TabsContent>
@@ -532,18 +500,10 @@ export default function ProjectDetails() {
                     <table className="min-w-full text-left text-sm">
                       <thead className="bg-muted/40">
                         <tr>
-                          <th className="px-4 py-3 text-xs font-semibold text-muted-foreground">
-                            File
-                          </th>
-                          <th className="px-4 py-3 text-xs font-semibold text-muted-foreground">
-                            Size
-                          </th>
-                          <th className="px-4 py-3 text-xs font-semibold text-muted-foreground">
-                            Uploaded
-                          </th>
-                          <th className="px-4 py-3 text-xs font-semibold text-muted-foreground text-right">
-                            Actions
-                          </th>
+                          <th className="px-4 py-3 text-xs font-semibold text-muted-foreground">File</th>
+                          <th className="px-4 py-3 text-xs font-semibold text-muted-foreground">Size</th>
+                          <th className="px-4 py-3 text-xs font-semibold text-muted-foreground">Uploaded</th>
+                          <th className="px-4 py-3 text-xs font-semibold text-muted-foreground text-right">Actions</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -563,34 +523,17 @@ export default function ProjectDetails() {
                           documents!.map((doc) => (
                             <tr key={doc.id} className="border-t border-border">
                               <td className="px-4 py-3 font-medium">{doc.file_name}</td>
-                              <td className="px-4 py-3 text-muted-foreground">
-                                {formatBytes(doc.size_bytes)}
-                              </td>
-                              <td className="px-4 py-3 text-muted-foreground">
-                                {new Date(doc.created_at).toLocaleString()}
-                              </td>
+                              <td className="px-4 py-3 text-muted-foreground">{formatBytes(doc.size_bytes)}</td>
+                              <td className="px-4 py-3 text-muted-foreground">{new Date(doc.created_at).toLocaleString()}</td>
                               <td className="px-4 py-3">
                                 <div className="flex justify-end gap-2">
-                                  <Button
-                                    size="sm"
-                                    onClick={() =>
-                                      navigate(`/projects/${projectId}/documents/${doc.id}`)
-                                    }
-                                  >
+                                  <Button size="sm" onClick={() => navigate(`/projects/${projectId}/documents/${doc.id}`)}>
                                     Open
                                   </Button>
-                                  <Button
-                                    variant="outline"
-                                    size="sm"
-                                    onClick={() => void renameDocument(doc)}
-                                  >
+                                  <Button variant="outline" size="sm" onClick={() => void renameDocument(doc)}>
                                     Rename
                                   </Button>
-                                  <Button
-                                    variant="destructive"
-                                    size="sm"
-                                    onClick={() => void deleteDocument(doc)}
-                                  >
+                                  <Button variant="destructive" size="sm" onClick={() => void deleteDocument(doc)}>
                                     Delete
                                   </Button>
                                 </div>
@@ -609,16 +552,14 @@ export default function ProjectDetails() {
               </div>
             </TabsContent>
 
-{/* Takeoff */}
-<TabsContent value="takeoff" className="mt-6">
-  {/* Full-height takeoff workspace (embedded). Removes duplicate takeoff heading and maximizes space. */}
-  <div className="-mx-2 sm:-mx-4">
-    <div className="h-[calc(100vh-260px)] min-h-[560px] bg-muted/20 rounded-xl border border-border overflow-hidden">
-      <TakeoffWorkspaceContent projectId={projectId!} embedded />
-    </div>
-  </div>
-</TabsContent>
-
+            {/* Takeoff */}
+            <TabsContent value="takeoff" className="mt-0">
+              <div className="-mx-2 sm:-mx-4">
+                <div className="h-[calc(100vh-260px)] min-h-[560px] bg-muted/20 rounded-xl border border-border overflow-hidden">
+                  <TakeoffWorkspaceContent projectId={projectId!} embedded scaleTrigger={takeoffScaleTrigger} />
+                </div>
+              </div>
+            </TabsContent>
 
             {/* Estimating */}
             <TabsContent value="estimating">
