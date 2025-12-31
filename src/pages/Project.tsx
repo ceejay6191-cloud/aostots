@@ -4,7 +4,7 @@ import { AppLayout } from "@/components/layout/AppLayout";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 
-const TABS = ["overview", "documents", "takeoff", "estimating", "proposal"] as const;
+const TABS = ["overview", "documents", "takeoff", "bidding", "proposal"] as const;
 
 function titleCase(s: string) {
   return s.charAt(0).toUpperCase() + s.slice(1);
@@ -79,12 +79,12 @@ export default function Project() {
             <div className="rounded-2xl border bg-card p-6">
               <div className="text-lg font-semibold">Takeoff</div>
               <p className="text-muted-foreground mt-2">
-                Next: takeoff canvas (PDF viewer + overlay) and save quantities linked to estimating.
+                Next: takeoff canvas (PDF viewer + overlay) and save quantities linked to bidding.
               </p>
             </div>
           </TabsContent>
 
-          <TabsContent value="estimating" className="mt-0">
+          <TabsContent value="bidding" className="mt-0">
             <div className="rounded-2xl border bg-card p-6">
               <div className="text-lg font-semibold">Estimating</div>
               <p className="text-muted-foreground mt-2">

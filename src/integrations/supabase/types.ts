@@ -61,7 +61,7 @@ export type Database = {
       [_ in never]: never
     }
     Enums: {
-      project_status: "templates" | "estimating" | "preliminaries" | "accepted"
+      project_status: "active" | "bidding" | "won" | "lost"
     }
     CompositeTypes: {
       [_ in never]: never

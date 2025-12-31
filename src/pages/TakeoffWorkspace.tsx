@@ -340,8 +340,8 @@ export function TakeoffWorkspaceContent({
 }: {
   projectId: string;
   embedded?: boolean;
-  activeTab?: "overview" | "documents" | "takeoff" | "estimating" | "proposal";
-  onTabChange?: (next: "overview" | "documents" | "takeoff" | "estimating" | "proposal") => void;
+  activeTab?: "overview" | "documents" | "takeoff" | "bidding" | "proposal";
+  onTabChange?: (next: "overview" | "documents" | "takeoff" | "bidding" | "proposal") => void;
 }) {
   const navigate = useNavigate();
 
@@ -925,7 +925,7 @@ export function TakeoffWorkspaceContent({
           ["overview", "Overview"],
           ["documents", "Documents"],
           ["takeoff", "Takeoff"],
-          ["estimating", "Estimating"],
+          ["bidding", "Estimating"],
           ["proposal", "Proposal"],
         ] as const
       ).map(([k, label]) => (

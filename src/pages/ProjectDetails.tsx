@@ -120,7 +120,7 @@ export default function ProjectDetails() {
     client_name: "",
     client_email: "",
     estimator_name: "",
-    status: "estimating" as ProjectStatus,
+    status: "bidding" as ProjectStatus,
     notes: "",
   });
 
@@ -131,7 +131,7 @@ export default function ProjectDetails() {
       client_name: project.client_name ?? "",
       client_email: project.client_email ?? "",
       estimator_name: project.estimator_name ?? "",
-      status: project.status ?? "estimating",
+      status: project.status ?? "bidding",
       notes: project.notes ?? "",
     });
   }, [project]);

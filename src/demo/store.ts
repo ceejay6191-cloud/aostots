@@ -31,10 +31,10 @@ function seed(ownerId: string): DemoState {
 
   return {
     projects: [
-      base("demo-p1", "Template – Bathroom Reno", "templates", 0, "Demo Client"),
-      base("demo-p2", "Smith St Extension", "estimating", 12450, "Valerie Smith"),
-      base("demo-p3", "Warehouse Fitout", "preliminaries", 7800, "ACME Logistics"),
-      base("demo-p4", "Granny Flat – Stage 2", "accepted", 42650, "Adrian & Co"),
+      base("demo-p1", "Template – Bathroom Reno", "active", 0, "Demo Client"),
+      base("demo-p2", "Smith St Extension", "bidding", 12450, "Valerie Smith"),
+      base("demo-p3", "Warehouse Fitout", "bidding", 7800, "ACME Logistics"),
+      base("demo-p4", "Granny Flat – Stage 2", "won", 42650, "Adrian & Co"),
     ],
   };
 }
@@ -78,10 +78,10 @@ export const demoStore = {
     return {
       total: projects.length,
       totalSales,
-      templates: projects.filter(p => p.status === "templates").length,
-      estimating: projects.filter(p => p.status === "estimating").length,
-      preliminaries: projects.filter(p => p.status === "preliminaries").length,
-      accepted: projects.filter(p => p.status === "accepted").length,
+      active: projects.filter(p => p.status === "active").length,
+      bidding: projects.filter(p => p.status === "bidding").length,
+      won: projects.filter(p => p.status === "won").length,
+      lost: projects.filter(p => p.status === "lost").length,
     };
   },
 

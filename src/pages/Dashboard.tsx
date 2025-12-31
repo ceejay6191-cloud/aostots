@@ -1,91 +1,104 @@
-import { useNavigate } from 'react-router-dom';
-import { AppLayout } from '@/components/layout/AppLayout';
-import { StatCard } from '@/components/dashboard/StatCard';
-import { StatusBreakdown } from '@/components/dashboard/StatusBreakdown';
-import { RecentProjectsTable } from '@/components/dashboard/RecentProjectsTable';
-import { Button } from '@/components/ui/button';
-import { Skeleton } from '@/components/ui/skeleton';
-import { useProjectStats } from '@/hooks/useProjects';
-import { FolderKanban, DollarSign, Clock, CheckCircle2, Plus, ArrowRight } from 'lucide-react';
+import { useNavigate } from "react-router-dom";
+import { AppLayout } from "@/components/layout/AppLayout";
+import { StatCard } from "@/components/dashboard/StatCard";
+import { StatusBreakdown } from "@/components/dashboard/StatusBreakdown";
+import { RecentProjectsTable } from "@/components/dashboard/RecentProjectsTable";
+import { DashboardCharts } from "@/components/dashboard/DashboardCharts";
+import { PipelineInsights } from "@/components/dashboard/PipelineInsights";
+import { AlertsPanel } from "@/components/dashboard/AlertsPanel";
+import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
+import { useProjects, useProjectStats } from "@/hooks/useProjects";
+import { FolderKanban, DollarSign, Clock, CheckCircle2, XCircle, Plus } from "lucide-react";
 
 export default function Dashboard() {
-  const { data: stats, isLoading } = useProjectStats();
+  const { data: stats, isLoading: statsLoading } = useProjectStats();
+  const { data: projects = [], isLoading: projectsLoading } = useProjects();
   const navigate = useNavigate();
 
   const formatCurrency = (amount: number) => {
-    return new Intl.NumberFormat('en-US', {
-      style: 'currency',
-      currency: 'USD',
-      minimumFractionDigits: 0,
+    return new Intl.NumberFormat("en-US", {
+      style: "currency",
+      currency: "USD",
       maximumFractionDigits: 0,
     }).format(amount);
   };
 
+  const loading = statsLoading || projectsLoading || !stats;
+
   return (
     <AppLayout>
-      <div className="space-y-8">
-        {/* Header */}
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+      <div className="space-y-6">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div>
-            <h1 className="text-3xl font-display font-bold tracking-tight">Dashboard</h1>
-            <p className="text-muted-foreground mt-1">Overview of your estimating activity</p>
+            <h1 className="text-3xl font-bold tracking-tight">Dashboard</h1>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Portfolio snapshot, pipeline signals, and operational alerts.
+            </p>
           </div>
-          <div className="flex gap-3">
-            <Button variant="outline" onClick={() => navigate('/projects')}>
-              <ArrowRight className="mr-2 h-4 w-4" />
-              Go to Projects
-            </Button>
-            <Button onClick={() => navigate('/projects/new')}>
-              <Plus className="mr-2 h-4 w-4" />
-              New Project
-            </Button>
-          </div>
+          <Button onClick={() => navigate("/projects/new")}>
+            <Plus className="mr-2 h-4 w-4" />
+            New Project
+          </Button>
         </div>
 
-        {/* Stats Grid */}
-        {isLoading ? (
-          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-            {[...Array(4)].map((_, i) => (
-              <Skeleton key={i} className="h-32" />
+        {/* Stat cards (keep the previous visual style) */}
+        {loading ? (
+          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+            {Array.from({ length: 5 }).map((_, i) => (
+              <Skeleton key={i} className="h-28 w-full rounded-xl" />
             ))}
           </div>
-        ) : stats ? (
-          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+        ) : (
+          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
             <StatCard
               title="Total Projects"
               value={stats.total}
               icon={<FolderKanban className="h-5 w-5 text-primary" />}
-              description="All time"
             />
             <StatCard
-              title="Total Sales"
+              title="Total Value"
               value={formatCurrency(stats.totalSales)}
-              icon={<DollarSign className="h-5 w-5 text-accent" />}
-              description="Combined value"
-              accent
+              icon={<DollarSign className="h-5 w-5 text-primary" />}
             />
             <StatCard
-              title="Estimating"
-              value={stats.estimating}
-              icon={<Clock className="h-5 w-5 text-status-estimating" />}
-              description="In progress"
+              title="Bidding"
+              value={stats.bidding ?? stats.estimating + stats.preliminaries}
+              icon={<Clock className="h-5 w-5 text-primary" />}
             />
             <StatCard
-              title="Accepted"
-              value={stats.accepted}
-              icon={<CheckCircle2 className="h-5 w-5 text-status-accepted" />}
-              description="Completed"
+              title="Won"
+              value={stats.won ?? stats.accepted}
+              icon={<CheckCircle2 className="h-5 w-5 text-primary" />}
+            />
+            <StatCard
+              title="Lost"
+              value={stats.lost ?? 0}
+              icon={<XCircle className="h-5 w-5 text-primary" />}
             />
           </div>
-        ) : null}
+        )}
 
-        {/* Main Content Grid */}
-        <div className="grid gap-6 lg:grid-cols-3">
+        {/* Charts row (interactive) */}
+        <DashboardCharts />
+
+        {/* Insights + Alerts */}
+        {projectsLoading ? (
+          <Skeleton className="h-52 w-full rounded-xl" />
+        ) : (
+          <div className="grid gap-4 lg:grid-cols-2">
+            <PipelineInsights projects={projects} />
+            <AlertsPanel projects={projects} />
+          </div>
+        )}
+
+        {/* Bottom grid: recent projects + status breakdown */}
+        <div className="grid gap-4 lg:grid-cols-3">
           <div className="lg:col-span-2">
             <RecentProjectsTable />
           </div>
           <div>
-            {isLoading ? (
+            {loading ? (
               <Skeleton className="h-64" />
             ) : stats ? (
               <StatusBreakdown stats={stats} />

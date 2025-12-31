@@ -18,7 +18,7 @@ const formSchema = z.object({
   client_name: z.string().min(1, 'Client name is required').max(100, 'Name too long'),
   client_email: z.string().email('Invalid email').optional().or(z.literal('')),
   client_phone: z.string().max(20, 'Phone too long').optional().or(z.literal('')),
-  status: z.enum(['templates', 'estimating', 'preliminaries', 'accepted']),
+  status: z.enum(['active', 'bidding', 'won', 'lost']),
 });
 
 type FormData = z.infer<typeof formSchema>;
@@ -35,7 +35,7 @@ export function NewProjectForm() {
       client_name: '',
       client_email: '',
       client_phone: '',
-      status: 'templates',
+      status: 'bidding',
     },
   });
 

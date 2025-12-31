@@ -1338,7 +1338,7 @@ export default function ProjectDocumentPages() {
                     ) : null}
 
                     <div className="text-xs text-muted-foreground">
-                      Tip: Legacy Region A/B templates were migrated to Region 1/2 automatically,
+                      Tip: Legacy Region A/B active were migrated to Region 1/2 automatically,
                       preserving “B - A” ordering.
                     </div>
                   </Card>

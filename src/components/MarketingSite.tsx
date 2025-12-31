@@ -376,7 +376,7 @@ export default function MarketingSite() {
         <div className="mx-auto max-w-6xl px-4 py-14 sm:px-6">
           <SectionTitle
             kicker="Roadmap"
-            title="Ship an MVP that wins trust, then scale into automation and estimating depth"
+            title="Ship an MVP that wins trust, then scale into automation and bidding depth"
             subtitle="Start with reliability and speed. Add typicals, catalogs, and advanced automation as adoption grows."
           />
 
@@ -393,7 +393,7 @@ export default function MarketingSite() {
             <div className="rounded-2xl border border-slate-200 bg-slate-50 p-6">
               <div className="flex items-center gap-2">
                 <Badge>V1</Badge>
-                <span className="text-sm font-semibold text-slate-900">Automation + estimating links</span>
+                <span className="text-sm font-semibold text-slate-900">Automation + bidding links</span>
               </div>
               <div className="mt-4">
                 <FeatureList items={v1} />

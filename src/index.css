@@ -37,10 +37,10 @@
     --radius: 0.75rem;
 
     /* Custom colors for status badges */
-    --status-templates: 250 60% 60%;
-    --status-estimating: 38 92% 50%;
-    --status-preliminaries: 215 70% 50%;
-    --status-accepted: 142 76% 36%;
+    --status-active: 250 60% 60%;
+    --status-bidding: 38 92% 50%;
+    --status-lost: 215 70% 50%;
+    --status-won: 142 76% 36%;
 
     /* Gradients */
     --gradient-primary: linear-gradient(135deg, hsl(215 70% 45%) 0%, hsl(200 80% 50%) 100%);

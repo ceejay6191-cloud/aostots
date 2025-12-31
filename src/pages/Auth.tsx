@@ -99,7 +99,7 @@ export default function Auth() {
       <div className="w-full max-w-md space-y-6">
         <div className="text-center">
           <h1 className="font-display text-3xl font-bold text-foreground">Aostot</h1>
-          <p className="text-muted-foreground mt-2">Project estimating made simple</p>
+          <p className="text-muted-foreground mt-2">Project bidding made simple</p>
         </div>
 
         <Card className="shadow-card">
