@@ -11,6 +11,11 @@ import { toast } from "@/components/ui/use-toast";
 
 import { supabase } from "@/integrations/supabase/client";
 
+// NOTE: Supabase generated types in this repo currently include only the `projects` table.
+// To avoid TypeScript overload errors for other tables (project_documents, document_pages, ...),
+// we use an untyped client for those table calls. Runtime behavior is unchanged.
+const db = supabase as any;
+
 import { GlobalWorkerOptions, getDocument } from "pdfjs-dist";
 GlobalWorkerOptions.workerSrc = new URL(
   "pdfjs-dist/build/pdf.worker.min.mjs",
@@ -410,7 +415,7 @@ export default function ProjectDocumentPages() {
     queryKey: ["project-document", documentId],
     enabled: !!documentId,
     queryFn: async () => {
-      const { data, error } = await supabase
+      const { data, error } = await db
         .from("project_documents")
         .select(
           "id,project_id,owner_id,bucket,path,file_name,mime_type,size_bytes,created_at,label_template"
@@ -439,7 +444,7 @@ export default function ProjectDocumentPages() {
     queryKey: ["document-pages", documentId],
     enabled: !!documentId,
     queryFn: async () => {
-      const { data, error } = await supabase
+      const { data, error } = await db
         .from("document_pages")
         .select(
           "id,document_id,project_id,owner_id,page_number,page_name,width_px,height_px,rotation,created_at,updated_at"
@@ -528,7 +533,7 @@ export default function ProjectDocumentPages() {
         rotation: 0,
       }));
 
-      const { error } = await supabase
+      const { error } = await db
         .from("document_pages")
         .upsert(inserts, { onConflict: "document_id,page_number" });
 
@@ -568,7 +573,7 @@ export default function ProjectDocumentPages() {
 
   const savePageNameMutation = useMutation({
     mutationFn: async (payload: { pageId: string; pageName: string }) => {
-      const { error } = await supabase
+      const { error } = await db
         .from("document_pages")
         .update({ page_name: payload.pageName.trim() || null })
         .eq("id", payload.pageId);
@@ -590,7 +595,7 @@ export default function ProjectDocumentPages() {
   const saveTemplateMutation = useMutation({
     mutationFn: async (payload: LabelTemplateV2) => {
       if (!doc) throw new Error("Missing doc");
-      const { error } = await supabase
+      const { error } = await db
         .from("project_documents")
         .update({ label_template: payload })
         .eq("id", doc.id);
@@ -907,7 +912,7 @@ export default function ProjectDocumentPages() {
         updates.push({ id: p.id, page_name: sug || null });
       }
 
-      const { error } = await supabase
+      const { error } = await db
         .from("document_pages")
         .upsert(updates, { onConflict: "id" });
       if (error) throw error;
