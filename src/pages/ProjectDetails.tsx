@@ -35,24 +35,22 @@ type ProjectRow = {
   name: string;
   client_name: string | null;
   client_email: string | null;
-  estimator_name: string | null;
   status: ProjectStatus;
   total_sales: number | null;
   notes: string | null;
   created_at: string;
 
-  // NEW (persisted fields that were resetting)
+  // persisted fields (if present in DB)
   location: string | null;
   description: string | null;
-  start_date: string | null;       // ISO date string: "YYYY-MM-DD"
-  completion_date: string | null;  // ISO date string: "YYYY-MM-DD"
+  start_date: string | null; // YYYY-MM-DD
+  completion_date: string | null; // YYYY-MM-DD
 
-  // If you already added these in DB, keep them here too:
+  // optional (if present in DB)
   primary_contact_name?: string | null;
   primary_contact_email?: string | null;
   primary_contact_phone?: string | null;
 };
-
 
 type TabKey = "overview" | "documents" | "takeoff" | "estimating" | "proposal" | "scan";
 
@@ -103,7 +101,7 @@ function readActivity(projectId: string): ActivityItem[] {
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
     return parsed
-      .filter((x) => typeof x?.at === "number" && typeof x?.action === "string")
+      .filter((x) => typeof (x as any)?.at === "number" && typeof (x as any)?.action === "string")
       .slice(0, 30);
   } catch {
     return [];
@@ -129,6 +127,90 @@ function ProgressBar({ value }: { value: number }) {
   );
 }
 
+/**
+ * Progress calculations (derived; not stored in DB yet)
+ * - docs_pct: default target_docs = 1 (first PDF => 100%)
+ * - takeoff_pct: placeholder (requires takeoff persistence/stats) => 0 for now
+ * - estimating_pct: based on non-empty estimate lines stored by EstimatingWorkspace in localStorage
+ * - proposal_pct: based on ProposalWorkspace draft status stored in localStorage
+ * - overall_pct: weighted average
+ */
+const TARGET_DOCS = 1;
+const TARGET_LINES = 20;
+
+type EstimateRow = {
+  id?: string;
+  code?: string;
+  description?: string;
+  unit?: string;
+  qty?: number | string;
+  rate?: number | string;
+};
+
+function readEstimateRows(projectId: string): EstimateRow[] {
+  try {
+    const raw = localStorage.getItem(`aostot:estimate:${projectId}`);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed as EstimateRow[];
+  } catch {
+    return [];
+  }
+}
+
+type ProposalDraft = { status?: string };
+
+function readProposalStatus(projectId: string): string | null {
+  try {
+    const raw = localStorage.getItem(`aostot:proposal:${projectId}`);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as ProposalDraft;
+    return (parsed?.status ?? null) as string | null;
+  } catch {
+    return null;
+  }
+}
+
+function computeDocsPct(docsCount: number) {
+  if (TARGET_DOCS <= 0) return 0;
+  return clampPct((Math.min(docsCount, TARGET_DOCS) / TARGET_DOCS) * 100);
+}
+
+function computeEstimatingPct(rows: EstimateRow[]) {
+  const nonempty = rows.filter((r) => {
+    const desc = String(r.description ?? "").trim();
+    const qty = Number(r.qty ?? 0);
+    const rate = Number(r.rate ?? 0);
+    return Boolean(desc) || qty > 0 || rate > 0;
+  }).length;
+
+  if (TARGET_LINES <= 0) return 0;
+  return clampPct((nonempty / TARGET_LINES) * 100);
+}
+
+function computeProposalPct(statusRaw: string | null) {
+  const s = String(statusRaw ?? "").trim().toLowerCase();
+  if (!s) return 0;
+
+  if (s === "draft") return 50;
+  if (s === "sent") return 90;
+  if (s === "accepted") return 100;
+  if (s === "rejected") return 100;
+
+  // allow variants
+  if (s.includes("draft")) return 50;
+  if (s.includes("sent")) return 90;
+  if (s.includes("accept")) return 100;
+  if (s.includes("reject")) return 100;
+
+  return 0;
+}
+
+function computeOverallPct(docsPct: number, takeoffPct: number, estimatingPct: number, proposalPct: number) {
+  return clampPct(docsPct * 0.2 + takeoffPct * 0.35 + estimatingPct * 0.3 + proposalPct * 0.15);
+}
+
 export default function ProjectDetails() {
   const { projectId } = useParams();
   const navigate = useNavigate();
@@ -138,15 +220,17 @@ export default function ProjectDetails() {
 
   // ------------------------------------------------------------
   // Project query
+  // NOTE: We cast supabase to `any` to avoid "No matching export / relation" issues
+  // when local generated types are out-of-date. You can regenerate types later.
   // ------------------------------------------------------------
   const { data: project, isLoading, error } = useQuery({
     queryKey: ["project", projectId],
     enabled: !!projectId,
     queryFn: async () => {
-      const { data, error } = await supabase
+      const { data, error } = await (supabase as any)
         .from("projects")
         .select(
-  "id,name,client_name,client_email,estimator_name,status,total_sales,notes,created_at,location,description,start_date,completion_date,primary_contact_name,primary_contact_email,primary_contact_phone"
+          "id,name,client_name,client_email,status,total_sales,notes,created_at,location,description,start_date,completion_date,primary_contact_name,primary_contact_email,primary_contact_phone"
         )
         .eq("id", projectId)
         .single();
@@ -163,7 +247,7 @@ export default function ProjectDetails() {
     queryKey: ["project-documents", projectId],
     enabled: !!projectId,
     queryFn: async () => {
-      const { data, error } = await supabase
+      const { data, error } = await (supabase as any)
         .from("project_documents")
         .select("id,project_id,owner_id,bucket,path,file_name,mime_type,size_bytes,created_at")
         .eq("project_id", projectId)
@@ -179,89 +263,81 @@ export default function ProjectDetails() {
   // ------------------------------------------------------------
   const statusOptions = useMemo(() => Object.keys(STATUS_LABELS) as ProjectStatus[], []);
 
- const [form, setForm] = useState({
-  name: "",
-  client_name: "",
-  client_email: "",
-  estimator_name: "",
-  status: "estimating" as ProjectStatus,
-  notes: "",
+  const [form, setForm] = useState({
+    name: "",
+    client_name: "",
+    client_email: "",
+    status: "bidding" as ProjectStatus,
+    notes: "",
 
-  // NEW
-  location: "",
-  description: "",
-  start_date: "",        // "YYYY-MM-DD"
-  completion_date: "",   // "YYYY-MM-DD"
+    location: "",
+    description: "",
+    start_date: "",
+    completion_date: "",
 
-  // Primary contact (if you added them)
-  primary_contact_name: "",
-  primary_contact_email: "",
-  primary_contact_phone: "",
-});
+    primary_contact_name: "",
+    primary_contact_email: "",
+    primary_contact_phone: "",
+  });
 
+  // ------------------------------------------------------------
+  // Inline edit: Project title (click to edit)
+  // ------------------------------------------------------------
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [titleDraft, setTitleDraft] = useState("");
+  const titleInputRef = useRef<HTMLInputElement | null>(null);
 
-// ------------------------------------------------------------
-// Inline edit: Project title (click to edit)
-// ------------------------------------------------------------
-const [editingTitle, setEditingTitle] = useState(false);
-const [titleDraft, setTitleDraft] = useState("");
-const titleInputRef = useRef<HTMLInputElement | null>(null);
-
-useEffect(() => {
-  // keep draft in sync when project loads
-  setTitleDraft(form.name);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-}, [project?.id]);
-
-useEffect(() => {
-  if (!editingTitle) return;
-  requestAnimationFrame(() => titleInputRef.current?.focus());
-}, [editingTitle]);
-
-function commitTitle() {
-  const next = titleDraft.trim();
-  if (!next) {
+  useEffect(() => {
     setTitleDraft(form.name);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [project?.id]);
+
+  useEffect(() => {
+    if (!editingTitle) return;
+    requestAnimationFrame(() => titleInputRef.current?.focus());
+  }, [editingTitle]);
+
+  function commitTitle() {
+    const next = titleDraft.trim();
+    if (!next) {
+      setTitleDraft(form.name);
+      setEditingTitle(false);
+      return;
+    }
+    setForm((p) => ({ ...p, name: next }));
+    setTitleDraft(next);
     setEditingTitle(false);
-    return;
   }
-  setForm((p) => ({ ...p, name: next }));
-  setTitleDraft(next);
-  setEditingTitle(false);
-}
 
   const didInitFormRef = useRef(false);
 
-useEffect(() => {
-  // When switching to another projectId, allow re-init
-  didInitFormRef.current = false;
-}, [projectId]);
+  useEffect(() => {
+    didInitFormRef.current = false;
+  }, [projectId]);
 
-useEffect(() => {
-  if (!project) return;
-  if (didInitFormRef.current) return;
+  useEffect(() => {
+    if (!project) return;
+    if (didInitFormRef.current) return;
 
-  setForm({
-    name: project.name ?? "",
-    client_name: project.client_name ?? "",
-    client_email: project.client_email ?? "",
-    estimator_name: project.estimator_name ?? "",
-    status: project.status ?? "estimating",
-    notes: project.notes ?? "",
+    setForm({
+      name: project.name ?? "",
+      client_name: project.client_name ?? "",
+      client_email: project.client_email ?? "",
+      status: project.status ?? "bidding",
+      notes: project.notes ?? "",
 
-    location: project.location ?? "",
-    description: project.description ?? "",
-    start_date: project.start_date ?? "",
-    completion_date: project.completion_date ?? "",
+      location: project.location ?? "",
+      description: project.description ?? "",
+      start_date: project.start_date ?? "",
+      completion_date: project.completion_date ?? "",
 
-    primary_contact_name: project.primary_contact_name ?? "",
-    primary_contact_email: project.primary_contact_email ?? "",
-    primary_contact_phone: project.primary_contact_phone ?? "",
-  });
+      primary_contact_name: project.primary_contact_name ?? "",
+      primary_contact_email: project.primary_contact_email ?? "",
+      primary_contact_phone: project.primary_contact_phone ?? "",
+    });
 
-  didInitFormRef.current = true;
-}, [project]);
-
+    didInitFormRef.current = true;
+  }, [project]);
 
   const lastSavedKeyRef = useRef<string>("");
   const autosaveTimerRef = useRef<number | null>(null);
@@ -270,7 +346,7 @@ useEffect(() => {
   const autosaveMutation = useMutation({
     mutationFn: async (payload: Record<string, unknown>) => {
       if (!projectId) throw new Error("Missing projectId");
-      const { error } = await supabase.from("projects").update(payload).eq("id", projectId);
+      const { error } = await (supabase as any).from("projects").update(payload).eq("id", projectId);
       if (error) throw error;
     },
     onSuccess: async () => {
@@ -278,7 +354,6 @@ useEffect(() => {
       await qc.invalidateQueries({ queryKey: ["project", projectId] });
       await qc.invalidateQueries({ queryKey: ["projects"] });
 
-      // local recent activity (DB-based activity comes later)
       try {
         const { data } = await supabase.auth.getUser();
         const actor = data.user?.email ?? "Unknown user";
@@ -302,23 +377,21 @@ useEffect(() => {
     if (!project) return;
 
     const payload = {
-  name: form.name.trim(),
-  client_name: form.client_name.trim() || null,
-  client_email: form.client_email.trim() || null,
-  estimator_name: form.estimator_name.trim() || null,
-  status: form.status,
-  notes: form.notes.trim() || null,
+      name: form.name.trim(),
+      client_name: form.client_name.trim() || null,
+      client_email: form.client_email.trim() || null,
+      status: form.status,
+      notes: form.notes.trim() || null,
 
-  location: form.location.trim() || null,
-  description: form.description.trim() || null,
-  start_date: form.start_date || null,
-  completion_date: form.completion_date || null,
+      location: form.location.trim() || null,
+      description: form.description.trim() || null,
+      start_date: form.start_date || null,
+      completion_date: form.completion_date || null,
 
-  primary_contact_name: form.primary_contact_name.trim() || null,
-  primary_contact_email: form.primary_contact_email.trim() || null,
-  primary_contact_phone: form.primary_contact_phone.trim() || null,
-};
-
+      primary_contact_name: form.primary_contact_name.trim() || null,
+      primary_contact_email: form.primary_contact_email.trim() || null,
+      primary_contact_phone: form.primary_contact_phone.trim() || null,
+    };
 
     const key = stableStringify(payload);
 
@@ -376,7 +449,7 @@ useEffect(() => {
       return;
     }
 
-    const { error: insErr } = await supabase.from("project_documents").insert({
+    const { error: insErr } = await (supabase as any).from("project_documents").insert({
       project_id: projectId,
       owner_id: uid,
       bucket,
@@ -397,8 +470,6 @@ useEffect(() => {
 
     toast({ title: "Uploaded", description: "Document uploaded and added to the list." });
     await qc.invalidateQueries({ queryKey: ["project-documents", projectId] });
-
-    setForm((p) => ({ ...p, documents_progress: Math.max(p.documents_progress, 25) }));
   }
 
   // ------------------------------------------------------------
@@ -411,7 +482,7 @@ useEffect(() => {
     const trimmed = next.trim();
     if (!trimmed) return;
 
-    const { error } = await supabase.from("project_documents").update({ file_name: trimmed }).eq("id", doc.id);
+    const { error } = await (supabase as any).from("project_documents").update({ file_name: trimmed }).eq("id", doc.id);
 
     if (error) {
       toast({ title: "Rename failed", description: error.message, variant: "destructive" });
@@ -432,7 +503,7 @@ useEffect(() => {
       return;
     }
 
-    const { error: dbErr } = await supabase.from("project_documents").delete().eq("id", doc.id);
+    const { error: dbErr } = await (supabase as any).from("project_documents").delete().eq("id", doc.id);
 
     if (dbErr) {
       toast({ title: "Deleted file, but failed to delete record", description: dbErr.message, variant: "destructive" });
@@ -468,15 +539,33 @@ useEffect(() => {
     );
   }
 
+  // ------------------------------------------------------------
+  // Derived progress (auto)
+  // ------------------------------------------------------------
   const docsCount = documents?.length ?? 0;
+  const estimateRows = projectId ? readEstimateRows(projectId) : [];
+  const proposalStatus = projectId ? readProposalStatus(projectId) : null;
+
+  const documents_progress = computeDocsPct(docsCount);
+  const takeoff_progress = 0; // TODO: compute from takeoff items once persisted
+  const estimating_progress = computeEstimatingPct(estimateRows);
+  const proposal_progress = computeProposalPct(proposalStatus);
+
+  const overall_progress = computeOverallPct(
+    documents_progress,
+    takeoff_progress,
+    estimating_progress,
+    proposal_progress
+  );
+
   const recentActivity = projectId ? readActivity(projectId) : [];
 
   const tabPills = {
-    overview: clampPct(form.overall_progress),
-    documents: clampPct(form.documents_progress),
-    takeoff: clampPct(form.takeoff_progress),
-    estimating: clampPct(form.estimating_progress),
-    proposal: clampPct(form.proposal_progress),
+    overview: overall_progress,
+    documents: documents_progress,
+    takeoff: takeoff_progress,
+    estimating: estimating_progress,
+    proposal: proposal_progress,
     scan: 0,
   } as const;
 
@@ -564,7 +653,6 @@ useEffect(() => {
             {/* Overview */}
             <TabsContent value="overview">
               <div className="space-y-6">
-                {/* Top summary card (matches the design you referenced) */}
                 <Card className="p-6">
                   <div className="mt-6 grid gap-6 md:grid-cols-2">
                     <div className="space-y-4">
@@ -589,6 +677,7 @@ useEffect(() => {
                         <div className="w-full">
                           <div className="text-xs text-muted-foreground">Estimated Value</div>
                           <div className="mt-1 text-2xl font-semibold">{formatMoney(project.total_sales)}</div>
+                          <div className="mt-1 text-xs text-muted-foreground">(from Estimating total)</div>
                         </div>
                       </div>
                     </div>
@@ -615,19 +704,13 @@ useEffect(() => {
                         <div className="w-full">
                           <div className="flex items-center justify-between gap-3">
                             <div className="text-xs text-muted-foreground">Overall Progress</div>
-                            <div className="text-sm font-medium tabular-nums">{clampPct(form.overall_progress)}%</div>
+                            <div className="text-sm font-medium tabular-nums">{overall_progress}%</div>
                           </div>
                           <div className="mt-2">
-                            <ProgressBar value={form.overall_progress} />
+                            <ProgressBar value={overall_progress} />
                           </div>
-                          <div className="mt-2">
-                            <Input
-                              type="number"
-                              min={0}
-                              max={100}
-                              value={form.overall_progress}
-                              onChange={(e) => setForm((p) => ({ ...p, overall_progress: clampPct(Number(e.target.value)) }))}
-                            />
+                          <div className="mt-2 text-xs text-muted-foreground">
+                            Weighted: docs 20% · takeoff 35% · estimating 30% · proposal 15%
                           </div>
                         </div>
                       </div>
@@ -635,7 +718,6 @@ useEffect(() => {
                   </div>
                 </Card>
 
-                {/* Primary Contact */}
                 <Card className="p-6">
                   <div className="text-lg font-semibold">Client Contact</div>
                   <div className="mt-4 grid gap-4 md:grid-cols-3">
@@ -654,7 +736,6 @@ useEffect(() => {
                   </div>
                 </Card>
 
-                {/* Summary cards row */}
                 <div className="grid gap-4 md:grid-cols-4">
                   <Card className="p-5">
                     <div className="flex items-center justify-between">
@@ -663,9 +744,10 @@ useEffect(() => {
                     </div>
                     <div className="mt-2 text-3xl font-semibold">{docsCount}</div>
                     <div className="mt-3 flex items-center gap-2">
-                      <ProgressBar value={form.documents_progress} />
-                      <span className="text-sm tabular-nums">{clampPct(form.documents_progress)}%</span>
+                      <ProgressBar value={documents_progress} />
+                      <span className="text-sm tabular-nums">{documents_progress}%</span>
                     </div>
+                    <div className="mt-1 text-xs text-muted-foreground">Target docs: {TARGET_DOCS}</div>
                   </Card>
 
                   <Card className="p-5">
@@ -673,10 +755,11 @@ useEffect(() => {
                       <div className="text-sm text-muted-foreground">Takeoff Progress</div>
                       <Ruler className="h-4 w-4 text-muted-foreground" />
                     </div>
-                    <div className="mt-2 text-3xl font-semibold">{clampPct(form.takeoff_progress)}%</div>
+                    <div className="mt-2 text-3xl font-semibold">{takeoff_progress}%</div>
                     <div className="mt-3">
-                      <ProgressBar value={form.takeoff_progress} />
+                      <ProgressBar value={takeoff_progress} />
                     </div>
+                    <div className="mt-1 text-xs text-muted-foreground">Next: compute from takeoff items.</div>
                   </Card>
 
                   <Card className="p-5">
@@ -684,10 +767,11 @@ useEffect(() => {
                       <div className="text-sm text-muted-foreground">BOQ Completion</div>
                       <Calculator className="h-4 w-4 text-muted-foreground" />
                     </div>
-                    <div className="mt-2 text-3xl font-semibold">{clampPct(form.estimating_progress)}%</div>
+                    <div className="mt-2 text-3xl font-semibold">{estimating_progress}%</div>
                     <div className="mt-3">
-                      <ProgressBar value={form.estimating_progress} />
+                      <ProgressBar value={estimating_progress} />
                     </div>
+                    <div className="mt-1 text-xs text-muted-foreground">Target lines: {TARGET_LINES}</div>
                   </Card>
 
                   <Card className="p-5">
@@ -695,133 +779,46 @@ useEffect(() => {
                       <div className="text-sm text-muted-foreground">Proposals</div>
                       <Send className="h-4 w-4 text-muted-foreground" />
                     </div>
-                    <div className="mt-2 text-3xl font-semibold">{clampPct(form.proposal_progress)}%</div>
+                    <div className="mt-2 text-3xl font-semibold">{proposal_progress}%</div>
                     <div className="mt-3">
-                      <ProgressBar value={form.proposal_progress} />
+                      <ProgressBar value={proposal_progress} />
                     </div>
+                    <div className="mt-1 text-xs text-muted-foreground">Status: {proposalStatus ?? "—"}</div>
                   </Card>
                 </div>
 
-                {/* Timeline + Progress/Activity */}
                 <div className="grid gap-4 lg:grid-cols-3">
                   <Card className="p-6 lg:col-span-2">
                     <div className="text-lg font-semibold">Project Timeline (Bidding)</div>
-                    <div className="mt-4 grid gap-4">
-                      {(
-                        [
-                          ["bid_submission_for_tender", "Submission for Tender"],
-                          ["bid_estimation", "Estimation"],
-                          ["bid_review", "Review"],
-                          ["bid_deadline", "Bidding Deadline"],
-                          ["bid_sent_proposal", "Sent Proposal"],
-                        ] as const
-                      ).map(([key, label]) => (
-                        <div key={key} className="grid gap-3 md:grid-cols-[1fr_220px] md:items-center">
-                          <div>
-                            <div className="font-medium">{label}</div>
-                            <div className="text-xs text-muted-foreground">Bidding milestone</div>
-                          </div>
-                          <Input
-                            type="date"
-                            value={(form as any)[key] as string}
-                            onChange={(e) => setForm((p) => ({ ...p, [key]: e.target.value } as any))}
-                          />
-                        </div>
-                      ))}
+                    <div className="mt-3 text-sm text-muted-foreground">
+                      Next step: persist bidding milestones in Supabase (currently UI-only).
                     </div>
                   </Card>
 
-                  <div className="space-y-4">
-                    <Card className="p-6">
-                      <div className="text-lg font-semibold">Project Progress</div>
-                      <div className="mt-4 space-y-4">
-                        {(
-                          [
-                            ["Documents", form.documents_progress],
-                            ["Takeoff", form.takeoff_progress],
-                            ["Estimating", form.estimating_progress],
-                            ["Proposal", form.proposal_progress],
-                          ] as const
-                        ).map(([label, v]) => (
-                          <div key={label}>
-                            <div className="flex items-center justify-between text-sm">
-                              <span className="font-medium">{label}</span>
-                              <span className="tabular-nums">{clampPct(v)}%</span>
-                            </div>
-                            <div className="mt-2">
-                              <ProgressBar value={v} />
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-
-                      <div className="mt-4 grid grid-cols-2 gap-2">
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => setForm((p) => ({ ...p, documents_progress: clampPct(p.documents_progress + 5) }))}
-                        >
-                          + Docs
-                        </Button>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => setForm((p) => ({ ...p, overall_progress: clampPct(p.overall_progress + 5) }))}
-                        >
-                          + Overall
-                        </Button>
-                      </div>
-
-                      <div className="mt-3 text-xs text-muted-foreground">
-                        Next step: make these update automatically from Documents/Takeoff/Estimating/Proposal events.
-                      </div>
-                    </Card>
-
-                    <Card className="p-6">
-                      <div className="text-lg font-semibold">Recent Activity</div>
-                      <div className="mt-4 space-y-3">
-                        {recentActivity.length ? (
-                          recentActivity.slice(0, 8).map((a, idx) => (
-                            <div key={`${a.at}-${idx}`} className="text-sm">
-                              <div className="flex items-center justify-between gap-3">
-                                <div className="min-w-0">
-                                  <div className="font-medium truncate">{a.action}</div>
-                                  <div className="text-xs text-muted-foreground truncate">{a.actor ?? "Unknown"}</div>
-                                </div>
-                                <div className="text-xs text-muted-foreground whitespace-nowrap">
-                                  {new Date(a.at).toLocaleString()}
-                                </div>
+                  <Card className="p-6">
+                    <div className="text-lg font-semibold">Recent Activity</div>
+                    <div className="mt-4 space-y-3">
+                      {recentActivity.length ? (
+                        recentActivity.slice(0, 8).map((a, idx) => (
+                          <div key={`${a.at}-${idx}`} className="text-sm">
+                            <div className="flex items-center justify-between gap-3">
+                              <div className="min-w-0">
+                                <div className="font-medium truncate">{a.action}</div>
+                                <div className="text-xs text-muted-foreground truncate">{a.actor ?? "Unknown"}</div>
+                              </div>
+                              <div className="text-xs text-muted-foreground whitespace-nowrap">
+                                {new Date(a.at).toLocaleString()}
                               </div>
                             </div>
-                          ))
-                        ) : (
-                          <div className="text-sm text-muted-foreground">No recent activity yet.</div>
-                        )}
-                      </div>
-                      <div className="mt-4">
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => {
-                            pushActivity(projectId!, {
-                              at: Date.now(),
-                              action: "Manual note",
-                              actor: "You",
-                            });
-                            toast({ title: "Added activity" });
-                          }}
-                        >
-                          Add activity (test)
-                        </Button>
-                      </div>
-                      <div className="mt-2 text-xs text-muted-foreground">
-                        Next step: store activity + quote versions in Supabase for audit trail.
-                      </div>
-                    </Card>
-                  </div>
+                          </div>
+                        ))
+                      ) : (
+                        <div className="text-sm text-muted-foreground">No recent activity yet.</div>
+                      )}
+                    </div>
+                  </Card>
                 </div>
 
-                {/* Notes */}
                 <Card className="p-6">
                   <div className="text-lg font-semibold">Internal Notes</div>
                   <div className="mt-3">

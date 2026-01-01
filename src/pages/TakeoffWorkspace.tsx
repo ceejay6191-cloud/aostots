@@ -20,6 +20,7 @@ import {
 
 // Data
 import { supabase } from "@/integrations/supabase/client";
+
 import { STATUS_LABELS, ProjectStatus } from "@/types/project";
 
 // PDF.js
@@ -30,6 +31,10 @@ GlobalWorkerOptions.workerSrc = new URL(
   "pdfjs-dist/build/pdf.worker.min.mjs",
   import.meta.url
 ).toString();
+
+// Supabase types in this repo are currently generated only for the "projects" table.
+// Use an untyped client for other tables (project_documents, document_pages, etc.) to avoid TS errors.
+const db = supabase as any;
 
 /**
  * B4 PERFORMANCE MODEL:
@@ -53,11 +58,9 @@ type ProjectRow = {
   name: string;
   client_name: string | null;
   client_email: string | null;
-  estimator_name: string | null;
   status: ProjectStatus;
   total_sales: number | null;
-  notes: string | null;
-  created_at: string;
+created_at: string;
 };
 
 type DocumentRow = {
@@ -101,6 +104,9 @@ type TakeoffItem =
       kind: "count";
       page: number;
       p: Point;
+      /** Optional label/value for UI display (defaults shown if undefined). */
+      label?: string;
+      value?: number;
     }
   | {
       id: string;
@@ -301,7 +307,7 @@ function PdfCanvasViewer({
 
         onViewport({ width: canvas.width, height: canvas.height }, PDF_RENDER_SCALE);
 
-        const task = page.render({ canvasContext: ctx, viewport });
+        const task = page.render({ canvas, canvasContext: ctx, viewport } as any);
         renderTaskRef.current = task;
         await task.promise;
         renderTaskRef.current = null;
@@ -406,7 +412,7 @@ export function TakeoffWorkspaceContent({
     queryFn: async () => {
       const { data, error } = await supabase
         .from("projects")
-        .select("id,name,client_name,client_email,estimator_name,status,total_sales,notes,created_at")
+        .select("id,name,client_name,client_email,client_phone,status,total_sales,created_at,updated_at")
         .eq("id", projectId)
         .single();
       if (error) throw error;
@@ -419,7 +425,7 @@ export function TakeoffWorkspaceContent({
     queryKey: ["project-documents", projectId],
     enabled: !!projectId,
     queryFn: async () => {
-      const { data, error } = await supabase
+      const { data, error } = await db
         .from("project_documents")
         .select("id,project_id,owner_id,bucket,path,file_name,created_at")
         .eq("project_id", projectId)
@@ -446,7 +452,7 @@ export function TakeoffWorkspaceContent({
     queryKey: ["document_pages", activeDocId],
     enabled: !!activeDocId,
     queryFn: async () => {
-      const { data, error } = await supabase
+      const { data, error } = await db
         .from("document_pages")
         .select("id,document_id,page_number,label")
         .eq("document_id", activeDocId)
@@ -1067,34 +1073,114 @@ export function TakeoffWorkspaceContent({
         >
           {/* Existing items */}
           {pageItems.map((it) => {
-            if (it.kind === "count") {
-              const cx = it.p.x * z;
-              const cy = it.p.y * z;
-              return (
-                <g key={it.id}>
-                  <circle cx={cx} cy={cy} r={5} />
-                </g>
-              );
-            }
+            switch (it.kind) {
+              case "count": {
+                return (
+                  <div
+                    key={it.id}
+                    className="absolute -translate-x-1/2 -translate-y-1/2 rounded-full bg-primary/90 px-2 py-1 text-xs font-semibold text-primary-foreground shadow"
+                    style={{ left: it.p.x, top: it.p.y }}
+                    title={it.label}
+                  >
+                    {it.value}
+                  </div>
+                );
+              }
+              case "measure":
+              case "line": {
+                const x1 = it.a.x;
+                const y1 = it.a.y;
+                const x2 = it.b.x;
+                const y2 = it.b.y;
+                const dx = x2 - x1;
+                const dy = y2 - y1;
+                const len = Math.sqrt(dx * dx + dy * dy);
+                const mx = (x1 + x2) / 2;
+                const my = (y1 + y2) / 2;
 
-            if (it.kind === "measure" || it.kind === "line") {
-              const x1 = it.a.x * z;
-              const y1 = it.a.y * z;
-              const x2 = it.b.x * z;
-              const y2 = it.b.y * z;
-              return (
-                <g key={it.id}>
-                  <line x1={x1} y1={y1} x2={x2} y2={y2} strokeWidth={2} />
-                </g>
-              );
-            }
+                return (
+                  <div key={it.id} className="absolute inset-0 pointer-events-none">
+                    <svg className="absolute inset-0 h-full w-full">
+                      <line
+                        x1={x1}
+                        y1={y1}
+                        x2={x2}
+                        y2={y2}
+                        stroke="hsl(var(--primary))"
+                        strokeWidth={2}
+                      />
+                      {/* endpoints */}
+                      <circle cx={x1} cy={y1} r={4} fill="hsl(var(--primary))" />
+                      <circle cx={x2} cy={y2} r={4} fill="hsl(var(--primary))" />
+                    </svg>
+                    {it.kind === "measure" ? (
+                      <div
+                        className="absolute -translate-x-1/2 -translate-y-1/2 rounded bg-background/90 px-2 py-1 text-xs font-medium shadow"
+                        style={{ left: mx, top: my }}
+                      >
+                        {(() => {
+  const len = dist(it.a, it.b);
+  if (!calibration) return `${Math.round(len)} px`;
+  const meters = len * calibration.metersPerDocPx;
+  return formatLength(meters, calibration.displayUnit);
+})()}
+                      </div>
+                    ) : (
+                      <div
+                        className="absolute -translate-x-1/2 -translate-y-1/2 rounded bg-background/90 px-2 py-1 text-xs font-medium shadow"
+                        style={{ left: mx, top: my }}
+                      >
+                        {(() => {
+  if (!calibration) return `${Math.round(len)} px`;
+  const meters = len * calibration.metersPerDocPx;
+  return formatLength(meters, calibration.displayUnit);
+})()}
+                      </div>
+                    )}
+                  </div>
+                );
+              }
+              case "area": {
+                const pts = it.pts;
+                const d = pts
+                  .map((p, i) => `${i === 0 ? "M" : "L"} ${p.x} ${p.y}`)
+                  .join(" ");
+                const closed = `${d} Z`;
 
-            const pts = it.pts.map((p) => `${p.x * z},${p.y * z}`).join(" ");
-            return (
-              <g key={it.id}>
-                <polygon points={pts} fillOpacity={0.08} strokeWidth={2} />
-              </g>
-            );
+                // centroid (simple average)
+                const cx = pts.reduce((acc, p) => acc + p.x, 0) / pts.length;
+                const cy = pts.reduce((acc, p) => acc + p.y, 0) / pts.length;
+
+                return (
+                  <div key={it.id} className="absolute inset-0 pointer-events-none">
+                    <svg className="absolute inset-0 h-full w-full">
+                      <path
+                        d={closed}
+                        fill="hsl(var(--primary) / 0.15)"
+                        stroke="hsl(var(--primary))"
+                        strokeWidth={2}
+                      />
+                      {pts.map((p, idx) => (
+                        <circle key={idx} cx={p.x} cy={p.y} r={4} fill="hsl(var(--primary))" />
+                      ))}
+                    </svg>
+                    <div
+                      className="absolute -translate-x-1/2 -translate-y-1/2 rounded bg-background/90 px-2 py-1 text-xs font-medium shadow"
+                      style={{ left: cx, top: cy }}
+                    >
+                      {(() => {
+  const aPx2 = polygonArea(it.pts);
+  if (!calibration) return `${Math.round(aPx2)} px²`;
+  const m2 = aPx2 * calibration.metersPerDocPx * calibration.metersPerDocPx;
+  return formatArea(m2, calibration.displayUnit);
+})()}
+                    </div>
+                  </div>
+                );
+              }
+              default:
+                return null;
+            }
           })}
 
           {/* Draft: measure/line */}
