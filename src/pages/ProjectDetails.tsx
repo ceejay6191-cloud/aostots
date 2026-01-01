@@ -14,6 +14,9 @@ import { toast } from "@/components/ui/use-toast";
 import { supabase } from "@/integrations/supabase/client";
 import { STATUS_LABELS, ProjectStatus } from "@/types/project";
 import { TakeoffWorkspaceContent } from "@/pages/TakeoffWorkspace";
+import { EstimatingWorkspaceContent } from "@/pages/EstimatingWorkspace";
+import { ProposalWorkspaceContent } from "@/pages/ProposalWorkspace";
+import { ScanWorkspaceContent } from "@/pages/ScanWorkspace";
 
 type ProjectRow = {
   id: string;
@@ -27,7 +30,7 @@ type ProjectRow = {
   created_at: string;
 };
 
-type TabKey = "overview" | "documents" | "takeoff" | "estimating" | "proposal";
+type TabKey = "overview" | "documents" | "takeoff" | "estimating" | "proposal" | "scan";
 
 type DocumentRow = {
   id: string;
@@ -120,7 +123,7 @@ export default function ProjectDetails() {
     client_name: "",
     client_email: "",
     estimator_name: "",
-    status: "bidding" as ProjectStatus,
+    status: "estimating" as ProjectStatus,
     notes: "",
   });
 
@@ -131,7 +134,7 @@ export default function ProjectDetails() {
       client_name: project.client_name ?? "",
       client_email: project.client_email ?? "",
       estimator_name: project.estimator_name ?? "",
-      status: project.status ?? "bidding",
+      status: project.status ?? "estimating",
       notes: project.notes ?? "",
     });
   }, [project]);
@@ -400,6 +403,7 @@ export default function ProjectDetails() {
                     <TabsTrigger value="takeoff">Takeoff</TabsTrigger>
                     <TabsTrigger value="estimating">Estimating</TabsTrigger>
                     <TabsTrigger value="proposal">Proposal</TabsTrigger>
+                    <TabsTrigger value="scan">Scan</TabsTrigger>
                   </TabsList>
                 </div>
               </div>
@@ -562,19 +566,32 @@ export default function ProjectDetails() {
             </TabsContent>
 
             {/* Estimating */}
-            <TabsContent value="estimating">
-              <div className="text-sm text-muted-foreground">
-                Placeholder. Next: Excel-like BOQ connected to takeoff quantities and assemblies.
+            <TabsContent value="estimating" className="mt-0">
+              <div className="-mx-2 sm:-mx-4">
+                <div className="h-[calc(100vh-260px)] min-h-[560px] bg-muted/20 rounded-xl border border-border overflow-hidden">
+                  <EstimatingWorkspaceContent projectId={projectId!} embedded />
+                </div>
               </div>
             </TabsContent>
 
-            {/* Proposal */}
-            <TabsContent value="proposal">
-              <div className="text-sm text-muted-foreground">
-                Placeholder. Next: print/export markups + estimate documents to PDF.
+{/* Proposal */}
+            <TabsContent value="proposal" className="mt-0">
+              <div className="-mx-2 sm:-mx-4">
+                <div className="h-[calc(100vh-260px)] min-h-[560px] bg-muted/20 rounded-xl border border-border overflow-hidden">
+                  <ProposalWorkspaceContent projectId={projectId!} embedded />
+                </div>
               </div>
             </TabsContent>
-          </div>
+
+            {/* Scan */}
+            <TabsContent value="scan" className="mt-0">
+              <div className="-mx-2 sm:-mx-4">
+                <div className="h-[calc(100vh-260px)] min-h-[560px] bg-muted/20 rounded-xl border border-border overflow-hidden">
+                  <ScanWorkspaceContent projectId={projectId!} embedded />
+                </div>
+              </div>
+            </TabsContent>
+</div>
         </Tabs>
       </Card>
     </AppLayout>

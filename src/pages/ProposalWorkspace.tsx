@@ -1,62 +1,57 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { AppLayout } from "@/components/layout/AppLayout";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { Badge } from "@/components/ui/badge";
 import { toast } from "@/components/ui/use-toast";
 
-import { supabase } from "@/integrations/supabase/client";
+/**
+ * Proposal (MVP)
+ * - Uses localStorage estimate (aostot:estimate:${projectId})
+ * - Editable sections
+ * - Print/export via window.print()
+ *
+ * Next: server-side PDF generation, versioning, and client portal links.
+ */
 
-type ProposalTemplateRow = {
-  id: string;
-  project_id: string;
-  owner_id: string;
-  name: string;
-  template_json: any;
-  created_at: string;
-  updated_at: string;
-};
-
-type ProposalRow = {
-  id: string;
-  project_id: string;
-  owner_id: string;
-  template_id: string | null;
-  version: number;
-  status: string;
-  snapshot: any;
-  created_at: string;
-  updated_at: string;
-};
+type Unit = "ea" | "m" | "m²" | "ft" | "ft²" | "ls";
 
 type EstimateRow = {
   id: string;
-  sheet_id: string;
-  row_index: number;
+  code: string;
   description: string;
-  qty_source: string;
-  qty_manual: number | null;
-  unit_cost: number;
-  markup_pct: number;
-  meta: any;
+  unit: Unit;
+  qty: number;
+  rate: number;
+  markupPct: number;
 };
 
-async function requireUserId() {
-  const { data, error } = await supabase.auth.getUser();
-  if (error) throw error;
-  const uid = data.user?.id;
-  if (!uid) throw new Error("Not signed in");
-  return uid;
+function money(n: number) {
+  return n.toLocaleString(undefined, { style: "currency", currency: "USD" });
 }
 
-function num(v: unknown) {
-  const n = typeof v === "number" ? v : Number(v);
-  return Number.isFinite(n) ? n : 0;
+function estimateKey(projectId: string) {
+  return `aostot:estimate:${projectId}`;
 }
+
+function proposalKey(projectId: string) {
+  return `aostot:proposal:${projectId}`;
+}
+
+type ProposalDraft = {
+  proposalNumber: string;
+  date: string;
+  preparedFor: string;
+  preparedBy: string;
+  intro: string;
+  scope: string;
+  exclusions: string;
+  terms: string;
+};
 
 export function ProposalWorkspaceContent({
   projectId,
@@ -66,308 +61,271 @@ export function ProposalWorkspaceContent({
   embedded?: boolean;
 }) {
   const navigate = useNavigate();
-  const qc = useQueryClient();
 
-  const { data: template } = useQuery({
-    queryKey: ["proposal-template", projectId],
-    enabled: !!projectId,
-    queryFn: async () => {
-      const { data, error } = await supabase
-        .from("proposal_templates")
-        .select("*")
-        .eq("project_id", projectId)
-        .order("created_at", { ascending: true })
-        .limit(1)
-        .maybeSingle();
-      if (error) throw error;
-      return (data ?? null) as ProposalTemplateRow | null;
-    },
+  const [draft, setDraft] = useState<ProposalDraft>({
+    proposalNumber: "",
+    date: new Date().toISOString().slice(0, 10),
+    preparedFor: "",
+    preparedBy: "",
+    intro:
+      "Thank you for the opportunity to provide a proposal for the works described below. This proposal is based on the provided plans and information available at the time of pricing.",
+    scope: "",
+    exclusions: "",
+    terms:
+      "Payment terms: 50% deposit, 40% progress, 10% upon completion.\nThis proposal is valid for 14 days.\nAny variations will be priced and approved in writing prior to execution.",
   });
+
+  // Load/save proposal draft
+  useEffect(() => {
+    const raw = localStorage.getItem(proposalKey(projectId));
+    if (!raw) return;
+    try {
+      const parsed = JSON.parse(raw) as ProposalDraft;
+      if (parsed && typeof parsed === "object") setDraft(parsed);
+    } catch {
+      // ignore
+    }
+  }, [projectId]);
 
   useEffect(() => {
-    (async () => {
-      if (!projectId) return;
-      if (template) return;
+    localStorage.setItem(proposalKey(projectId), JSON.stringify(draft));
+  }, [projectId, draft]);
 
-      try {
-        const uid = await requireUserId();
-        const { error } = await supabase.from("proposal_templates").insert({
-          project_id: projectId,
-          owner_id: uid,
-          name: "Default Template",
-          template_json: {
-            title: "Renovation Proposal",
-            intro: "Thank you for the opportunity to provide this proposal.",
-            scope: "",
-            terms: "Payment terms: 50% deposit, 50% upon completion.",
-          },
-        });
-        if (error) throw error;
-        await qc.invalidateQueries({ queryKey: ["proposal-template", projectId] });
-      } catch (e: any) {
-        toast({ title: "Failed to create proposal template", description: e?.message, variant: "destructive" });
-      }
-    })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectId, template?.id]);
+  const estimateRows = useMemo(() => {
+    const raw = localStorage.getItem(estimateKey(projectId));
+    if (!raw) return [] as EstimateRow[];
+    try {
+      const parsed = JSON.parse(raw) as EstimateRow[];
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [] as EstimateRow[];
+    }
+  }, [projectId]);
 
-  const templateId = template?.id ?? null;
-
-  const { data: proposals = [] } = useQuery({
-    queryKey: ["proposals", projectId],
-    enabled: !!projectId,
-    queryFn: async () => {
-      const { data, error } = await supabase
-        .from("proposals")
-        .select("*")
-        .eq("project_id", projectId)
-        .order("version", { ascending: false });
-      if (error) throw error;
-      return (data ?? []) as ProposalRow[];
-    },
-  });
-
-  const latestProposal = proposals[0] ?? null;
-
-  const { data: estimateRows = [] } = useQuery({
-    queryKey: ["proposal-estimate-rows", projectId],
-    enabled: !!projectId,
-    queryFn: async () => {
-      // Pull estimate rows (v1: first sheet)
-      const { data: sheet, error: sErr } = await supabase
-        .from("estimate_sheets")
-        .select("id")
-        .eq("project_id", projectId)
-        .order("created_at", { ascending: true })
-        .limit(1)
-        .maybeSingle();
-      if (sErr) throw sErr;
-      if (!sheet?.id) return [];
-      const { data: rows, error } = await supabase
-        .from("estimate_rows")
-        .select("id,sheet_id,row_index,description,qty_source,qty_manual,unit_cost,markup_pct,meta")
-        .eq("sheet_id", sheet.id)
-        .order("row_index", { ascending: true });
-      if (error) throw error;
-      return (rows ?? []) as EstimateRow[];
-    },
-  });
-
-  const estimateTotal = useMemo(() => {
-    // v1: manual qty only (takeoff-linked quantities are computed live in Estimating module)
-    return estimateRows.reduce((sum, r) => {
-      const qty = num(r.qty_manual);
-      const unit = num(r.unit_cost);
-      const mk = num(r.markup_pct);
-      const subtotal = qty * unit;
-      return sum + subtotal * (1 + mk / 100);
-    }, 0);
+  const totals = useMemo(() => {
+    const subtotal = estimateRows.reduce((s, r) => s + r.qty * r.rate, 0);
+    const total = estimateRows.reduce((s, r) => s + r.qty * r.rate * (1 + r.markupPct / 100), 0);
+    return { subtotal, total };
   }, [estimateRows]);
 
-  const [form, setForm] = useState({
-    title: "",
-    intro: "",
-    scope: "",
-    terms: "",
-  });
-
-  useEffect(() => {
-    const tj = template?.template_json ?? {};
-    setForm({
-      title: tj.title ?? "Renovation Proposal",
-      intro: tj.intro ?? "",
-      scope: tj.scope ?? "",
-      terms: tj.terms ?? "",
-    });
-  }, [templateId]);
-
-  const saveTemplate = useMutation({
-    mutationFn: async () => {
-      if (!templateId) throw new Error("Missing template");
-      const { error } = await supabase
-        .from("proposal_templates")
-        .update({
-          template_json: { ...form },
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", templateId);
-      if (error) throw error;
-    },
-    onSuccess: async () => {
-      toast({ title: "Template saved" });
-      await qc.invalidateQueries({ queryKey: ["proposal-template", projectId] });
-    },
-    onError: (e: any) => {
-      toast({ title: "Failed to save template", description: e?.message, variant: "destructive" });
-    },
-  });
-
-  const createVersion = useMutation({
-    mutationFn: async () => {
-      const uid = await requireUserId();
-      const nextVersion = (latestProposal?.version ?? 0) + 1;
-
-      const snapshot = {
-        template: { ...form },
-        estimate_total: estimateTotal,
-        estimate_rows: estimateRows,
-        created_at: new Date().toISOString(),
-      };
-
-      const { error } = await supabase.from("proposals").insert({
-        project_id: projectId,
-        owner_id: uid,
-        template_id: templateId,
-        version: nextVersion,
-        status: "draft",
-        snapshot,
+  function printProposal() {
+    if (!estimateRows.length) {
+      toast({
+        title: "No estimate lines",
+        description: "Add estimate lines first (Estimating tab).",
       });
-      if (error) throw error;
-    },
-    onSuccess: async () => {
-      toast({ title: "Proposal version created" });
-      await qc.invalidateQueries({ queryKey: ["proposals", projectId] });
-    },
-    onError: (e: any) => {
-      toast({ title: "Failed to create proposal", description: e?.message, variant: "destructive" });
-    },
-  });
+      return;
+    }
+    window.print();
+  }
 
   return (
-    <div className="w-full h-full">
+    <div className="h-full w-full">
       <Card className="h-full w-full overflow-hidden">
-        <div className="border-b bg-background px-4 py-3 flex items-center justify-between">
-          <div>
-            <div className="text-lg font-semibold">Proposal</div>
-            <div className="text-xs text-muted-foreground">
-              Proposal v1: template + version snapshot. Export via Print → Save as PDF.
+        {/* Header */}
+        <div className="border-b bg-background px-4 py-3 print:hidden">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <div className="text-lg font-semibold">Proposal</div>
+              <div className="mt-1 text-sm text-muted-foreground">
+                Generates a client-facing proposal from your estimate.
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <Button size="sm" onClick={printProposal}>
+                Export / Print
+              </Button>
+              {!embedded ? (
+                <Button variant="outline" size="sm" onClick={() => navigate(`/projects/${projectId}`)}>
+                  Back
+                </Button>
+              ) : null}
             </div>
           </div>
-          <div className="flex items-center gap-2">
-            <Button size="sm" variant="outline" onClick={() => window.print()}>
-              Print / Save PDF
-            </Button>
-            {!embedded ? (
-              <Button variant="outline" size="sm" onClick={() => navigate(`/projects/${projectId}`)}>
-                Back
-              </Button>
-            ) : null}
+
+          <div className="mt-3 flex flex-wrap items-center gap-2 text-sm">
+            <Badge variant="outline">Subtotal: {money(totals.subtotal)}</Badge>
+            <Badge variant="secondary">Total: {money(totals.total)}</Badge>
           </div>
         </div>
 
-        <div className="grid gap-4 p-4 lg:grid-cols-[380px_1fr]">
-          <div className="space-y-3">
-            <div className="rounded-lg border p-3 space-y-2">
-              <div className="text-sm font-semibold">Template</div>
-              <div className="text-xs text-muted-foreground">These fields are used for all proposal versions.</div>
+        {/* Content */}
+        <div className="h-[calc(100%-72px)] overflow-auto bg-muted/10 p-4 print:h-auto print:overflow-visible print:bg-white">
+          {/* Print styles */}
+          <style>{`
+            @media print {
+              @page { margin: 14mm; }
+              .print\\:hidden { display: none !important; }
+              .print\\:pagebreak { page-break-before: always; }
+            }
+          `}</style>
 
-              <div className="space-y-2">
-                <div className="text-xs font-semibold text-muted-foreground">Title</div>
-                <Input value={form.title} onChange={(e) => setForm((p) => ({ ...p, title: e.target.value }))} />
+          <div className="mx-auto max-w-[900px] rounded-xl border bg-white p-6 print:border-0 print:p-0">
+            <div className="flex items-start justify-between gap-6">
+              <div>
+                <div className="text-2xl font-bold">Proposal</div>
+                <div className="mt-1 text-sm text-muted-foreground">
+                  Prepared on {draft.date}
+                </div>
               </div>
 
-              <div className="space-y-2">
-                <div className="text-xs font-semibold text-muted-foreground">Intro</div>
-                <Textarea value={form.intro} onChange={(e) => setForm((p) => ({ ...p, intro: e.target.value }))} />
-              </div>
-
-              <div className="space-y-2">
-                <div className="text-xs font-semibold text-muted-foreground">Scope</div>
-                <Textarea value={form.scope} onChange={(e) => setForm((p) => ({ ...p, scope: e.target.value }))} />
-              </div>
-
-              <div className="space-y-2">
-                <div className="text-xs font-semibold text-muted-foreground">Terms</div>
-                <Textarea value={form.terms} onChange={(e) => setForm((p) => ({ ...p, terms: e.target.value }))} />
-              </div>
-
-              <div className="flex gap-2 pt-2">
-                <Button size="sm" onClick={() => saveTemplate.mutate()} disabled={!templateId}>
-                  Save template
-                </Button>
-                <Button size="sm" variant="outline" onClick={() => createVersion.mutate()} disabled={!templateId}>
-                  Create new version
-                </Button>
+              <div className="text-right text-sm">
+                <div className="font-medium">Proposal #</div>
+                <div className="text-muted-foreground">{draft.proposalNumber || "—"}</div>
               </div>
             </div>
 
-            <div className="rounded-lg border p-3">
-              <div className="text-sm font-semibold">Versions</div>
-              <div className="mt-2 space-y-2 text-sm">
-                {proposals.length ? (
-                  proposals.map((p) => (
-                    <div key={p.id} className="flex items-center justify-between rounded-md border px-2 py-2">
-                      <div>
-                        <div className="font-medium">v{p.version}</div>
-                        <div className="text-xs text-muted-foreground">{new Date(p.created_at).toLocaleString()}</div>
-                      </div>
-                      <div className="text-xs text-muted-foreground">{p.status}</div>
-                    </div>
-                  ))
-                ) : (
-                  <div className="text-xs text-muted-foreground">No versions yet.</div>
-                )}
+            <div className="mt-6 grid gap-4 md:grid-cols-2">
+              <div className="rounded-lg border p-4">
+                <div className="text-xs font-semibold text-muted-foreground">Prepared for</div>
+                <div className="mt-2 print:hidden">
+                  <Input
+                    value={draft.preparedFor}
+                    placeholder="Client / Company"
+                    onChange={(e) => setDraft((p) => ({ ...p, preparedFor: e.target.value }))}
+                  />
+                </div>
+                <div className="mt-2 hidden print:block">{draft.preparedFor || "—"}</div>
+              </div>
+
+              <div className="rounded-lg border p-4">
+                <div className="text-xs font-semibold text-muted-foreground">Prepared by</div>
+                <div className="mt-2 print:hidden">
+                  <Input
+                    value={draft.preparedBy}
+                    placeholder="Estimator / Company"
+                    onChange={(e) => setDraft((p) => ({ ...p, preparedBy: e.target.value }))}
+                  />
+                </div>
+                <div className="mt-2 hidden print:block">{draft.preparedBy || "—"}</div>
               </div>
             </div>
-          </div>
 
-          <div className="rounded-lg border bg-white p-6 print:p-0">
-            <div className="text-2xl font-bold">{form.title}</div>
-            <div className="mt-4 whitespace-pre-wrap text-sm">{form.intro}</div>
+            <div className="mt-6 space-y-5">
+              <section className="rounded-lg border p-4">
+                <div className="text-sm font-semibold">Introduction</div>
+                <div className="mt-2 print:hidden">
+                  <Textarea
+                    value={draft.intro}
+                    onChange={(e) => setDraft((p) => ({ ...p, intro: e.target.value }))}
+                    className="min-h-[90px]"
+                  />
+                </div>
+                <div className="mt-2 whitespace-pre-wrap hidden print:block">{draft.intro}</div>
+              </section>
 
-            <div className="mt-6">
-              <div className="text-sm font-semibold">Scope of Work</div>
-              <div className="mt-2 whitespace-pre-wrap text-sm">{form.scope || "—"}</div>
-            </div>
+              <section className="rounded-lg border p-4">
+                <div className="text-sm font-semibold">Scope of Works</div>
+                <div className="mt-2 print:hidden">
+                  <Textarea
+                    value={draft.scope}
+                    onChange={(e) => setDraft((p) => ({ ...p, scope: e.target.value }))}
+                    className="min-h-[120px]"
+                    placeholder="Describe the work included…"
+                  />
+                </div>
+                <div className="mt-2 whitespace-pre-wrap hidden print:block">{draft.scope || "—"}</div>
+              </section>
 
-            <div className="mt-6">
-              <div className="text-sm font-semibold">Pricing Summary</div>
-              <div className="mt-2 text-sm">
-                Current estimate total (v1): <span className="font-semibold">${estimateTotal.toFixed(2)}</span>
-              </div>
-              <div className="mt-3 overflow-auto rounded-md border">
-                <table className="min-w-full text-left text-sm">
-                  <thead className="bg-muted/40">
-                    <tr>
-                      <th className="px-3 py-2 text-xs font-semibold text-muted-foreground">#</th>
-                      <th className="px-3 py-2 text-xs font-semibold text-muted-foreground">Description</th>
-                      <th className="px-3 py-2 text-xs font-semibold text-muted-foreground text-right">Qty</th>
-                      <th className="px-3 py-2 text-xs font-semibold text-muted-foreground text-right">Unit</th>
-                      <th className="px-3 py-2 text-xs font-semibold text-muted-foreground text-right">Total</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {estimateRows.map((r) => {
-                      const qty = num(r.qty_manual);
-                      const unit = num(r.unit_cost);
-                      const mk = num(r.markup_pct);
-                      const subtotal = qty * unit;
-                      const total = subtotal * (1 + mk / 100);
-                      return (
-                        <tr key={r.id} className="border-t">
-                          <td className="px-3 py-2 text-muted-foreground">{r.row_index}</td>
-                          <td className="px-3 py-2">{r.description || "—"}</td>
-                          <td className="px-3 py-2 text-right tabular-nums">{qty.toFixed(3)}</td>
-                          <td className="px-3 py-2 text-right tabular-nums">${unit.toFixed(2)}</td>
-                          <td className="px-3 py-2 text-right tabular-nums">${total.toFixed(2)}</td>
-                        </tr>
-                      );
-                    })}
-                    {!estimateRows.length ? (
+              <section className="rounded-lg border p-4">
+                <div className="text-sm font-semibold">Estimate Summary</div>
+                <div className="mt-3 overflow-hidden rounded-lg border">
+                  <table className="min-w-full text-left text-sm">
+                    <thead className="bg-muted/30">
                       <tr>
-                        <td className="px-3 py-5 text-xs text-muted-foreground" colSpan={5}>
-                          No estimate rows found. Add rows in Estimating.
-                        </td>
+                        <th className="px-4 py-3 text-xs font-semibold text-muted-foreground">Code</th>
+                        <th className="px-4 py-3 text-xs font-semibold text-muted-foreground">Description</th>
+                        <th className="px-4 py-3 text-xs font-semibold text-muted-foreground text-right">Qty</th>
+                        <th className="px-4 py-3 text-xs font-semibold text-muted-foreground text-right">Unit</th>
+                        <th className="px-4 py-3 text-xs font-semibold text-muted-foreground text-right">Amount</th>
                       </tr>
-                    ) : null}
-                  </tbody>
-                </table>
-              </div>
-            </div>
+                    </thead>
+                    <tbody>
+                      {estimateRows.length ? (
+                        estimateRows.map((r) => {
+                          const amount = r.qty * r.rate * (1 + r.markupPct / 100);
+                          return (
+                            <tr key={r.id} className="border-t">
+                              <td className="px-4 py-2">{r.code || "—"}</td>
+                              <td className="px-4 py-2">{r.description || "—"}</td>
+                              <td className="px-4 py-2 text-right">{r.qty}</td>
+                              <td className="px-4 py-2 text-right">{r.unit}</td>
+                              <td className="px-4 py-2 text-right font-medium">{money(amount)}</td>
+                            </tr>
+                          );
+                        })
+                      ) : (
+                        <tr>
+                          <td className="px-4 py-4 text-sm text-muted-foreground" colSpan={5}>
+                            No estimate lines yet. Build your estimate first.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                    <tfoot className="border-t bg-muted/10">
+                      <tr>
+                        <td className="px-4 py-2 text-right font-semibold" colSpan={4}>
+                          Total
+                        </td>
+                        <td className="px-4 py-2 text-right font-semibold">{money(totals.total)}</td>
+                      </tr>
+                    </tfoot>
+                  </table>
+                </div>
+              </section>
 
-            <div className="mt-6">
-              <div className="text-sm font-semibold">Terms</div>
-              <div className="mt-2 whitespace-pre-wrap text-sm">{form.terms}</div>
+              <section className="rounded-lg border p-4">
+                <div className="text-sm font-semibold">Exclusions</div>
+                <div className="mt-2 print:hidden">
+                  <Textarea
+                    value={draft.exclusions}
+                    onChange={(e) => setDraft((p) => ({ ...p, exclusions: e.target.value }))}
+                    className="min-h-[90px]"
+                    placeholder="List exclusions…"
+                  />
+                </div>
+                <div className="mt-2 whitespace-pre-wrap hidden print:block">{draft.exclusions || "—"}</div>
+              </section>
+
+              <section className="rounded-lg border p-4">
+                <div className="text-sm font-semibold">Terms</div>
+                <div className="mt-2 print:hidden">
+                  <Textarea
+                    value={draft.terms}
+                    onChange={(e) => setDraft((p) => ({ ...p, terms: e.target.value }))}
+                    className="min-h-[120px]"
+                  />
+                </div>
+                <div className="mt-2 whitespace-pre-wrap hidden print:block">{draft.terms}</div>
+              </section>
+
+              <div className="print:pagebreak" />
+
+              <section className="rounded-lg border p-4">
+                <div className="text-sm font-semibold">Acceptance</div>
+                <div className="mt-2 text-sm text-muted-foreground">
+                  By signing below, the client accepts the proposal as presented.
+                </div>
+
+                <div className="mt-6 grid gap-6 md:grid-cols-2">
+                  <div className="rounded-lg border p-4">
+                    <div className="text-xs font-semibold text-muted-foreground">Client signature</div>
+                    <div className="mt-10 h-10 border-b" />
+                    <div className="mt-2 text-xs text-muted-foreground">Name / Date</div>
+                  </div>
+
+                  <div className="rounded-lg border p-4">
+                    <div className="text-xs font-semibold text-muted-foreground">Company signature</div>
+                    <div className="mt-10 h-10 border-b" />
+                    <div className="mt-2 text-xs text-muted-foreground">Name / Date</div>
+                  </div>
+                </div>
+              </section>
+
+              <div className="mt-3 text-xs text-muted-foreground print:hidden">
+                Next: proposal versions, cover branding, attachments, and PDF export service.
+              </div>
             </div>
           </div>
         </div>
@@ -378,13 +336,7 @@ export function ProposalWorkspaceContent({
 
 export default function ProposalWorkspace() {
   const { projectId } = useParams();
-  if (!projectId) {
-    return (
-      <AppLayout>
-        <Card className="p-6">Missing projectId</Card>
-      </AppLayout>
-    );
-  }
+  if (!projectId) return null;
 
   return (
     <AppLayout fullWidth>
