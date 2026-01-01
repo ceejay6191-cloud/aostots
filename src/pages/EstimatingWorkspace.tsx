@@ -1,33 +1,22 @@
-import { useEffect, useMemo, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { useParams } from "react-router-dom";
 
-import { AppLayout } from "@/components/layout/AppLayout";
-import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { Badge } from "@/components/ui/badge";
 import { toast } from "@/components/ui/use-toast";
 
-/**
- * Estimating (MVP)
- * - Spreadsheet-like editable table
- * - Persists per project in localStorage
- * - Can import aggregated quantities from Takeoff (if Takeoff persistence exists)
- *
- * NOTE: This is intentionally client-only persistence so you can iterate on UI/UX
- * before wiring Supabase tables for estimates and takeoff_items.
- */
+import { supabase } from "@/integrations/supabase/client";
 
-type Unit = "ea" | "m" | "m²" | "ft" | "ft²" | "ls";
+type Unit = "ls" | "ea" | "m" | "m2" | "m3";
 
 type EstimateRow = {
   id: string;
-  code: string; // cost code / division
+  code: string;
   description: string;
   unit: Unit;
   qty: number;
   rate: number;
-  markupPct: number; // 0-100
 };
 
 function safeId() {
@@ -37,90 +26,85 @@ function safeId() {
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
-function clamp(n: number, min: number, max: number) {
-  return Math.max(min, Math.min(max, n));
-}
-
-function toNumber(v: string) {
-  const n = Number(v);
-  return isFinite(n) ? n : 0;
-}
-
 function money(n: number) {
+  if (!isFinite(n)) return "$0.00";
   return n.toLocaleString(undefined, { style: "currency", currency: "USD" });
 }
 
-function lsKey(projectId: string) {
-  return `aostot:estimate:${projectId}`;
+function stableHash(obj: unknown) {
+  // lightweight deterministic hash via JSON + DJB2
+  const json = JSON.stringify(obj);
+  let h = 5381;
+  for (let i = 0; i < json.length; i++) h = (h * 33) ^ json.charCodeAt(i);
+  return (h >>> 0).toString(16);
 }
 
-type TakeoffAggregate = {
-  count: number;
-  linePx: number;
-  measurePx: number;
-  areaPx2: number;
-  // If takeoff stored calibrated totals, these may exist:
-  lineMeters?: number;
-  measureMeters?: number;
-  areaM2?: number;
-};
+async function logProjectActivity(params: {
+  projectId: string;
+  action: string;
+  entityType: string;
+  entityId?: string | null;
+  meta?: Record<string, any> | null;
+}) {
+  const { projectId, action, entityType, entityId, meta } = params;
 
-function readTakeoffAggregate(projectId: string): TakeoffAggregate | null {
-  // This key can be adjusted later to match your Takeoff persistence.
-  // We try a few common variants to avoid breaking if you renamed it.
-  const keys = [
-    `aostot:takeoff:${projectId}`,
-    `aostot:takeoffItems:${projectId}`,
-    `aostot:takeoff:items:${projectId}`,
-    `aostot:takeoff_items:${projectId}`,
-  ];
+  const { data: auth } = await supabase.auth.getUser();
+  const actorId = auth?.user?.id ?? null;
+  const actorEmail = auth?.user?.email ?? null;
 
-  for (const k of keys) {
-    const raw = localStorage.getItem(k);
-    if (!raw) continue;
+  const { error } = await supabase.from("project_activity").insert({
+    project_id: projectId,
+    actor_id: actorId,
+    actor_email: actorEmail,
+    action,
+    entity_type: entityType,
+    entity_id: entityId ?? null,
+    meta: meta ?? null,
+  });
 
-    try {
-      const parsed = JSON.parse(raw);
-
-      // Expected shape: { items: TakeoffItem[] } OR TakeoffItem[]
-      const items = Array.isArray(parsed) ? parsed : parsed?.items;
-      if (!Array.isArray(items)) continue;
-
-      let count = 0;
-      let linePx = 0;
-      let measurePx = 0;
-      let areaPx2 = 0;
-
-      for (const it of items) {
-        if (!it || typeof it !== "object") continue;
-        if (it.kind === "count" && it.p) count += 1;
-        if ((it.kind === "line" || it.kind === "measure") && it.a && it.b) {
-          const dx = it.a.x - it.b.x;
-          const dy = it.a.y - it.b.y;
-          const d = Math.sqrt(dx * dx + dy * dy);
-          if (it.kind === "line") linePx += d;
-          if (it.kind === "measure") measurePx += d;
-        }
-        if (it.kind === "area" && Array.isArray(it.pts) && it.pts.length >= 3) {
-          // shoelace
-          let sum = 0;
-          for (let i = 0; i < it.pts.length; i++) {
-            const j = (i + 1) % it.pts.length;
-            sum += it.pts[i].x * it.pts[j].y - it.pts[j].x * it.pts[i].y;
-          }
-          areaPx2 += Math.abs(sum) / 2;
-        }
-      }
-
-      return { count, linePx, measurePx, areaPx2 };
-    } catch {
-      // ignore and try next key
-    }
+  if (error) {
+    // non-fatal
+    // console.warn("activity insert failed", error);
   }
-
-  return null;
 }
 
+async function createEstimateVersion(params: {
+  projectId: string;
+  payload: any;
+  total: number;
+  note?: string | null;
+}) {
+  const { projectId, payload, total, note } = params;
+  const payloadHash = stableHash(payload);
+
+  // prevent duplicate consecutive versions (same hash)
+  const { data: last } = await supabase
+    .from("estimate_versions")
+    .select("payload_hash")
+    .eq("project_id", projectId)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (last?.payload_hash === payloadHash) return { skipped: true };
+
+  const { data, error } = await supabase.from("estimate_versions").insert({
+    project_id: projectId,
+    payload,
+    payload_hash: payloadHash,
+    total,
+    note: note ?? null,
+  }).select("id").single();
+
+  if (error) throw error;
+  return { skipped: false, id: data?.id as string };
+}
+
+/**
+ * Embedded-friendly estimating workspace.
+ * ProjectDetails imports this as:
+ *   import { EstimatingWorkspaceContent } from "@/pages/EstimatingWorkspace";
+ */
 export function EstimatingWorkspaceContent({
   projectId,
   embedded = false,
@@ -128,270 +112,225 @@ export function EstimatingWorkspaceContent({
   projectId: string;
   embedded?: boolean;
 }) {
-  const navigate = useNavigate();
-
-  const [rows, setRows] = useState<EstimateRow[]>([]);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-
-  // Load from localStorage
-  useEffect(() => {
-    const raw = localStorage.getItem(lsKey(projectId));
-    if (!raw) {
-      setRows([
-        {
-          id: safeId(),
-          code: "01",
-          description: "Preliminaries / Mobilization",
-          unit: "ls",
-          qty: 1,
-          rate: 0,
-          markupPct: 0,
-        },
-      ]);
-      return;
-    }
-    try {
-      const parsed = JSON.parse(raw) as EstimateRow[];
-      if (Array.isArray(parsed)) setRows(parsed);
-    } catch {
-      // ignore
-    }
-  }, [projectId]);
-
-  // Persist
-  useEffect(() => {
-    localStorage.setItem(lsKey(projectId), JSON.stringify(rows));
-  }, [projectId, rows]);
-
-  const totals = useMemo(() => {
-    const subtotal = rows.reduce((s, r) => s + r.qty * r.rate, 0);
-    const total = rows.reduce((s, r) => s + r.qty * r.rate * (1 + r.markupPct / 100), 0);
-    return { subtotal, total };
-  }, [rows]);
-
-  function addRow(afterId?: string) {
-    const next: EstimateRow = {
+  const [rows, setRows] = useState<EstimateRow[]>([
+    {
       id: safeId(),
-      code: "",
-      description: "",
+      code: "01",
+      description: "Preliminaries / Mobilization",
+      unit: "ls",
+      qty: 1,
+      rate: 9000,
+    },
+    {
+      id: safeId(),
+      code: "02",
+      description: "Qleave",
       unit: "ea",
-      qty: 0,
-      rate: 0,
-      markupPct: 0,
+      qty: 10,
+      rate: 875000,
+    },
+  ]);
+
+  const [selected, setSelected] = useState<Record<string, boolean>>({});
+  const selectedIds = useMemo(() => Object.keys(selected).filter((k) => selected[k]), [selected]);
+
+  const subtotal = useMemo(
+    () => rows.reduce((sum, r) => sum + (Number(r.qty) || 0) * (Number(r.rate) || 0), 0),
+    [rows]
+  );
+  const total = subtotal;
+
+  // ---- Debounced autosave to projects.total_sales + lightweight activity
+  const autosaveTimer = useRef<number | null>(null);
+  const lastSavedRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (!projectId) return;
+
+    if (autosaveTimer.current) window.clearTimeout(autosaveTimer.current);
+    autosaveTimer.current = window.setTimeout(async () => {
+      try {
+        // avoid useless writes
+        const t = Math.round(total * 100) / 100;
+        if (lastSavedRef.current === t) return;
+
+        const { error } = await supabase
+          .from("projects")
+          .update({ total_sales: t })
+          .eq("id", projectId);
+
+        if (error) throw error;
+        lastSavedRef.current = t;
+      } catch (e: any) {
+        toast({
+          title: "Autosave failed",
+          description: e?.message ?? "Could not update total sales",
+          variant: "destructive",
+        });
+      }
+    }, 650);
+
+    return () => {
+      if (autosaveTimer.current) window.clearTimeout(autosaveTimer.current);
     };
+  }, [projectId, total]);
 
-    if (!afterId) {
-      setRows((p) => [...p, next]);
-      setSelectedId(next.id);
-      return;
-    }
+  function updateRow(id: string, patch: Partial<EstimateRow>) {
+    setRows((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)));
+  }
 
-    setRows((p) => {
-      const idx = p.findIndex((x) => x.id === afterId);
-      if (idx < 0) return [...p, next];
-      const copy = [...p];
-      copy.splice(idx + 1, 0, next);
-      return copy;
-    });
-    setSelectedId(next.id);
+  function addLine() {
+    setRows((prev) => [
+      ...prev,
+      {
+        id: safeId(),
+        code: String(prev.length + 1).padStart(2, "0"),
+        description: "",
+        unit: "ea",
+        qty: 1,
+        rate: 0,
+      },
+    ]);
   }
 
   function deleteSelected() {
-    if (!selectedId) return;
-    setRows((p) => p.filter((r) => r.id !== selectedId));
-    setSelectedId(null);
+    if (!selectedIds.length) return;
+    setRows((prev) => prev.filter((r) => !selectedIds.includes(r.id)));
+    setSelected({});
   }
 
-  function importFromTakeoff() {
-    const agg = readTakeoffAggregate(projectId);
-    if (!agg) {
+  async function saveVersion() {
+    try {
+      const payload = { rows };
+      const res = await createEstimateVersion({ projectId, payload, total, note: null });
+
+      await logProjectActivity({
+        projectId,
+        action: res.skipped ? "estimate_version_skipped" : "estimate_version_saved",
+        entityType: "estimate",
+        entityId: res.skipped ? null : res.id,
+        meta: { total },
+      });
+
       toast({
-        title: "No takeoff data found",
-        description:
-          "Takeoff quantities are not persisted yet. Next step is to persist takeoff items per project, then import here.",
+        title: res.skipped ? "No changes to save" : "Version saved",
+        description: res.skipped ? "Current estimate matches last saved version." : "Audit trail updated.",
       });
-      return;
-    }
-
-    // Add a small set of starter lines based on the aggregate.
-    const nextLines: EstimateRow[] = [];
-
-    if (agg.count > 0) {
-      nextLines.push({
-        id: safeId(),
-        code: "06",
-        description: "Counts (imported)",
-        unit: "ea",
-        qty: agg.count,
-        rate: 0,
-        markupPct: 0,
+    } catch (e: any) {
+      toast({
+        title: "Save version failed",
+        description: e?.message ?? "Could not save estimate version",
+        variant: "destructive",
       });
     }
-
-    if (agg.areaPx2 > 0) {
-      nextLines.push({
-        id: safeId(),
-        code: "09",
-        description: "Areas (imported) – requires scale conversion",
-        unit: "m²",
-        qty: 0,
-        rate: 0,
-        markupPct: 0,
-      });
-    }
-
-    if (agg.measurePx > 0 || agg.linePx > 0) {
-      nextLines.push({
-        id: safeId(),
-        code: "08",
-        description: "Lengths (imported) – requires scale conversion",
-        unit: "m",
-        qty: 0,
-        rate: 0,
-        markupPct: 0,
-      });
-    }
-
-    if (!nextLines.length) {
-      toast({ title: "Nothing to import", description: "No takeoff items were detected." });
-      return;
-    }
-
-    setRows((p) => [...p, ...nextLines]);
-    toast({ title: "Imported", description: "Added estimate lines from takeoff aggregates." });
   }
 
   return (
-    <div className="h-full w-full">
-      <Card className="h-full w-full overflow-hidden">
-        {/* Header */}
-        <div className="border-b bg-background px-4 py-3">
-          <div className="flex items-start justify-between gap-3">
+    <div className={embedded ? "h-full w-full" : "p-4"}>
+      <Card className={embedded ? "h-full w-full overflow-hidden" : "p-4"}>
+        <div className={embedded ? "p-4" : ""}>
+          <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
-              <div className="text-lg font-semibold">Estimating</div>
-              <div className="mt-1 text-sm text-muted-foreground">
+              <div className="text-xl font-semibold">Estimating</div>
+              <div className="text-sm text-muted-foreground">
                 Spreadsheet-like estimate. Totals are calculated live.
               </div>
             </div>
 
-            {!embedded ? (
-              <Button variant="outline" size="sm" onClick={() => navigate(`/projects/${projectId}`)}>
-                Back
-              </Button>
-            ) : null}
+            <div className="flex items-center gap-2">
+              <div className="rounded-full border px-3 py-1 text-sm">
+                Subtotal: <span className="font-medium">{money(subtotal)}</span>
+              </div>
+              <div className="rounded-full border px-3 py-1 text-sm">
+                Total: <span className="font-medium">{money(total)}</span>
+              </div>
+            </div>
           </div>
 
-          <div className="mt-3 flex flex-wrap items-center gap-2">
-            <Button size="sm" onClick={() => addRow(selectedId ?? undefined)}>
+          <div className="mt-4 flex flex-wrap items-center gap-2">
+            <Button size="sm" onClick={addLine}>
               Add line
             </Button>
-            <Button size="sm" variant="outline" onClick={deleteSelected} disabled={!selectedId}>
+            <Button size="sm" variant="outline" onClick={deleteSelected} disabled={!selectedIds.length}>
               Delete
             </Button>
-            <Button size="sm" variant="outline" onClick={importFromTakeoff}>
-              Import from Takeoff
+            <Button size="sm" variant="outline" onClick={saveVersion}>
+              Save version
             </Button>
-
-            <div className="ml-auto flex items-center gap-2 text-sm">
-              <Badge variant="outline">Subtotal: {money(totals.subtotal)}</Badge>
-              <Badge variant="secondary">Total: {money(totals.total)}</Badge>
-            </div>
           </div>
-        </div>
 
-        {/* Body */}
-        <div className="h-[calc(100%-96px)] overflow-auto">
-          <div className="min-w-[980px]">
-            <div className="grid grid-cols-[140px_1fr_120px_120px_120px_120px] gap-2 border-b bg-muted/30 px-4 py-2 text-xs font-semibold text-muted-foreground">
-              <div>Code</div>
-              <div>Description</div>
-              <div className="text-right">Unit</div>
-              <div className="text-right">Qty</div>
-              <div className="text-right">Rate</div>
-              <div className="text-right">Amount</div>
-            </div>
+          <div className="mt-4 overflow-auto rounded-xl border">
+            <table className="min-w-full text-left text-sm">
+              <thead className="bg-muted/40">
+                <tr>
+                  <th className="w-10 px-3 py-2"></th>
+                  <th className="w-[140px] px-3 py-2 text-xs font-semibold text-muted-foreground">Code</th>
+                  <th className="px-3 py-2 text-xs font-semibold text-muted-foreground">Description</th>
+                  <th className="w-[120px] px-3 py-2 text-xs font-semibold text-muted-foreground">Unit</th>
+                  <th className="w-[120px] px-3 py-2 text-xs font-semibold text-muted-foreground">Qty</th>
+                  <th className="w-[140px] px-3 py-2 text-xs font-semibold text-muted-foreground">Rate</th>
+                  <th className="w-[160px] px-3 py-2 text-xs font-semibold text-muted-foreground text-right">Amount</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((r) => {
+                  const amount = (Number(r.qty) || 0) * (Number(r.rate) || 0);
+                  return (
+                    <tr key={r.id} className="border-t">
+                      <td className="px-3 py-2">
+                        <input
+                          type="checkbox"
+                          checked={!!selected[r.id]}
+                          onChange={(e) => setSelected((p) => ({ ...p, [r.id]: e.target.checked }))}
+                        />
+                      </td>
+                      <td className="px-3 py-2">
+                        <Input value={r.code} onChange={(e) => updateRow(r.id, { code: e.target.value })} />
+                      </td>
+                      <td className="px-3 py-2">
+                        <Input
+                          value={r.description}
+                          onChange={(e) => updateRow(r.id, { description: e.target.value })}
+                          placeholder="Description"
+                        />
+                      </td>
+                      <td className="px-3 py-2">
+                        <select
+                          className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
+                          value={r.unit}
+                          onChange={(e) => updateRow(r.id, { unit: e.target.value as Unit })}
+                        >
+                          <option value="ls">ls</option>
+                          <option value="ea">ea</option>
+                          <option value="m">m</option>
+                          <option value="m2">m²</option>
+                          <option value="m3">m³</option>
+                        </select>
+                      </td>
+                      <td className="px-3 py-2">
+                        <Input
+                          type="number"
+                          value={r.qty}
+                          onChange={(e) => updateRow(r.id, { qty: Number(e.target.value) })}
+                        />
+                      </td>
+                      <td className="px-3 py-2">
+                        <Input
+                          type="number"
+                          value={r.rate}
+                          onChange={(e) => updateRow(r.id, { rate: Number(e.target.value) })}
+                        />
+                      </td>
+                      <td className="px-3 py-2 text-right font-medium">{money(amount)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
 
-            {rows.map((r) => {
-              const amount = r.qty * r.rate * (1 + r.markupPct / 100);
-              const isSel = r.id === selectedId;
-
-              return (
-                <button
-                  key={r.id}
-                  type="button"
-                  className={[
-                    "grid w-full grid-cols-[140px_1fr_120px_120px_120px_120px] gap-2 border-b px-4 py-2 text-left hover:bg-muted/20",
-                    isSel ? "bg-muted/30" : "bg-background",
-                  ].join(" ")}
-                  onClick={() => setSelectedId(r.id)}
-                >
-                  <Input
-                    value={r.code}
-                    onChange={(e) =>
-                      setRows((p) => p.map((x) => (x.id === r.id ? { ...x, code: e.target.value } : x)))
-                    }
-                    className="h-8"
-                  />
-
-                  <Input
-                    value={r.description}
-                    onChange={(e) =>
-                      setRows((p) =>
-                        p.map((x) => (x.id === r.id ? { ...x, description: e.target.value } : x))
-                      )
-                    }
-                    className="h-8"
-                  />
-
-                  <select
-                    className="h-8 w-full rounded-md border border-input bg-background px-2 text-sm text-right"
-                    value={r.unit}
-                    onChange={(e) =>
-                      setRows((p) =>
-                        p.map((x) => (x.id === r.id ? { ...x, unit: e.target.value as Unit } : x))
-                      )
-                    }
-                  >
-                    <option value="ea">ea</option>
-                    <option value="m">m</option>
-                    <option value="m²">m²</option>
-                    <option value="ft">ft</option>
-                    <option value="ft²">ft²</option>
-                    <option value="ls">ls</option>
-                  </select>
-
-                  <Input
-                    inputMode="decimal"
-                    value={String(r.qty)}
-                    onChange={(e) =>
-                      setRows((p) =>
-                        p.map((x) => (x.id === r.id ? { ...x, qty: clamp(toNumber(e.target.value), 0, 1e9) } : x))
-                      )
-                    }
-                    className="h-8 text-right"
-                  />
-
-                  <Input
-                    inputMode="decimal"
-                    value={String(r.rate)}
-                    onChange={(e) =>
-                      setRows((p) =>
-                        p.map((x) => (x.id === r.id ? { ...x, rate: clamp(toNumber(e.target.value), 0, 1e9) } : x))
-                      )
-                    }
-                    className="h-8 text-right"
-                  />
-
-                  <div className="flex h-8 items-center justify-end text-sm font-medium">
-                    {money(amount)}
-                  </div>
-                </button>
-              );
-            })}
-
-            <div className="p-4 text-xs text-muted-foreground">
-              Next: assemblies, cost database, drag-fill, multi-select, and Supabase persistence.
-            </div>
+          <div className="mt-3 text-xs text-muted-foreground">
+            Audit trail: versions are recorded in Supabase when you click <span className="font-medium">Save version</span>.
           </div>
         </div>
       </Card>
@@ -399,15 +338,20 @@ export function EstimatingWorkspaceContent({
   );
 }
 
+/**
+ * Route wrapper (optional).
+ * Keeps backward compatibility if you have /projects/:projectId/estimating as a standalone route.
+ */
 export default function EstimatingWorkspace() {
   const { projectId } = useParams();
-  if (!projectId) return null;
 
-  return (
-    <AppLayout fullWidth>
-      <div className="h-[calc(100vh-72px)]">
-        <EstimatingWorkspaceContent projectId={projectId} />
+  if (!projectId) {
+    return (
+      <div className="p-6">
+        <Card className="p-6">Missing projectId</Card>
       </div>
-    </AppLayout>
-  );
+    );
+  }
+
+  return <EstimatingWorkspaceContent projectId={projectId} />;
 }

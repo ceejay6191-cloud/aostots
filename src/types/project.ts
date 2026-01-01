@@ -18,11 +18,6 @@ export interface Project {
 }
 
 export const STATUS_LABELS: Record<ProjectStatus, string> = {
-  templates: 'Templates',
-  estimating: 'Estimating',
-  preliminaries: 'Preliminaries',
-  accepted: 'Accepted',
-
   active: 'Active',
   bidding: 'Bidding',
   won: 'Won',
@@ -31,11 +26,6 @@ export const STATUS_LABELS: Record<ProjectStatus, string> = {
 
 // Used by badge styling in the app (tailwind variants mapped elsewhere)
 export const STATUS_COLORS: Record<ProjectStatus, string> = {
-  templates: 'templates',
-  estimating: 'estimating',
-  preliminaries: 'preliminaries',
-  accepted: 'accepted',
-
   active: 'active',
   bidding: 'bidding',
   won: 'won',
@@ -51,15 +41,6 @@ export function normalizePipelineStatus(status: ProjectStatus | string): 'active
     case 'lost':
       return status;
     // legacy mapping
-    case 'templates':
-      return 'active';
-    case 'estimating':
-    case 'preliminaries':
-      return 'bidding';
-    case 'accepted':
-      return 'won';
-    default:
-      return 'bidding';
   }
 }
 export function mapLegacyStatusToV2(status: string | null | undefined): ProjectStatusV2 {
