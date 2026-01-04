@@ -12,6 +12,7 @@ import { Badge } from "@/components/ui/badge";
 import { toast } from "@/components/ui/use-toast";
 
 import { supabase } from "@/integrations/supabase/client";
+import { inferMimeFromName } from "@/lib/documentKind";
 import { STATUS_LABELS, ProjectStatus } from "@/types/project";
 import { TakeoffWorkspaceContent } from "@/pages/TakeoffWorkspace";
 import { EstimatingWorkspaceContent } from "@/pages/EstimatingWorkspace";
@@ -439,9 +440,11 @@ export default function ProjectDetails() {
     const bucket = "project-documents";
     const path = `${uid}/${projectId}/${Date.now()}-${file.name}`;
 
+    const inferred = file.type || inferMimeFromName(file.name) || "application/octet-stream";
+
     const { error: upErr } = await supabase.storage.from(bucket).upload(path, file, {
       upsert: false,
-      contentType: file.type || "application/octet-stream",
+      contentType: inferred,
     });
 
     if (upErr) {
@@ -455,7 +458,7 @@ export default function ProjectDetails() {
       bucket,
       path,
       file_name: file.name,
-      mime_type: file.type || null,
+      mime_type: inferred === "application/octet-stream" ? null : inferred,
       size_bytes: file.size || null,
     });
 
