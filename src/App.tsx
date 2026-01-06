@@ -16,6 +16,7 @@ import TakeoffWorkspace from "@/pages/TakeoffWorkspace";
 import EstimatingWorkspace from "@/pages/EstimatingWorkspace";
 import ProposalWorkspace from "@/pages/ProposalWorkspace";
 import ScanWorkspace from "@/pages/ScanWorkspace";
+import Assemblies from "@/pages/Assemblies";
 
 const queryClient = new QueryClient();
 
@@ -31,6 +32,7 @@ const App = () => (
             <Route path="/auth" element={<Auth />} />
             <Route path="/dashboard" element={<Dashboard />} />
             <Route path="/projects" element={<Projects />} />
+            <Route path="/assemblies" element={<Assemblies />} />
             <Route path="/projects/:projectId" element={<ProjectDetails />} />
             <Route path="/projects/new" element={<NewProject />} />
             <Route path="/projects/:projectId/documents/:documentId" element={<ProjectDocumentPages />} />

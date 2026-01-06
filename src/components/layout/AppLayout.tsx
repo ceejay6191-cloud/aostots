@@ -1,6 +1,6 @@
 import { ReactNode } from "react";
 import { Link, useLocation } from "react-router-dom";
-import { LayoutDashboard, FolderKanban, LogOut } from "lucide-react";
+import { LayoutDashboard, FolderKanban, Boxes, LogOut } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { supabase } from "@/integrations/supabase/client";
@@ -75,6 +75,7 @@ export function AppLayout({
             <nav className="hidden md:flex items-center gap-1">
               <NavLink to="/dashboard" label="Dashboard" icon={<LayoutDashboard className="h-4 w-4" />} />
               <NavLink to="/projects" label="Projects" icon={<FolderKanban className="h-4 w-4" />} />
+              <NavLink to="/assemblies" label="Assemblies" icon={<Boxes className="h-4 w-4" />} />
             </nav>
           </div>
 
