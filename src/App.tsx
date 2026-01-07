@@ -2,7 +2,7 @@ import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { BrowserRouter, Routes, Route } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { AuthProvider } from "@/hooks/useAuth";
 import Index from "./pages/Index";
 import Auth from "./pages/Auth";
@@ -17,6 +17,15 @@ import EstimatingWorkspace from "@/pages/EstimatingWorkspace";
 import ProposalWorkspace from "@/pages/ProposalWorkspace";
 import ScanWorkspace from "@/pages/ScanWorkspace";
 import Assemblies from "@/pages/Assemblies";
+import Companies from "@/pages/Companies";
+import { AdminRoute } from "@/components/admin/AdminRoute";
+import { AdminLayout } from "@/components/admin/AdminLayout";
+import AdminDashboard from "@/pages/admin/AdminDashboard";
+import AdminUsers from "@/pages/admin/AdminUsers";
+import AdminUserDetails from "@/pages/admin/AdminUserDetails";
+import AdminBilling from "@/pages/admin/AdminBilling";
+import AdminAnalytics from "@/pages/admin/AdminAnalytics";
+import AdminSettings from "@/pages/admin/AdminSettings";
 
 const queryClient = new QueryClient();
 
@@ -33,6 +42,23 @@ const App = () => (
             <Route path="/dashboard" element={<Dashboard />} />
             <Route path="/projects" element={<Projects />} />
             <Route path="/assemblies" element={<Assemblies />} />
+            <Route path="/companies" element={<Companies />} />
+            <Route
+              path="/admin"
+              element={
+                <AdminRoute>
+                  <AdminLayout />
+                </AdminRoute>
+              }
+            >
+              <Route index element={<Navigate to="/admin/dashboard" replace />} />
+              <Route path="dashboard" element={<AdminDashboard />} />
+              <Route path="users" element={<AdminUsers />} />
+              <Route path="users/:id" element={<AdminUserDetails />} />
+              <Route path="billing" element={<AdminBilling />} />
+              <Route path="analytics" element={<AdminAnalytics />} />
+              <Route path="settings" element={<AdminSettings />} />
+            </Route>
             <Route path="/projects/:projectId" element={<ProjectDetails />} />
             <Route path="/projects/new" element={<NewProject />} />
             <Route path="/projects/:projectId/documents/:documentId" element={<ProjectDocumentPages />} />

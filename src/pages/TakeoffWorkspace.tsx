@@ -21,6 +21,7 @@ import {
 // Data
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
+import { useProjectPresence } from "@/hooks/useProjectPresence";
 
 import { STATUS_LABELS, ProjectStatus } from "@/types/project";
 
@@ -48,6 +49,7 @@ const PDF_RENDER_SCALE = 1.5;
 
 const SHORTCUTS_STORAGE_KEY = "aostot:takeoffShortcuts:v1";
 const VIEWER_STATE_STORAGE_PREFIX = "aostot:viewerState";
+const TAKEOFF_CACHE_PREFIX = "aostot:takeoffItems";
 
 const DEFAULT_SHORTCUTS: ShortcutMap = {
   area: "1",
@@ -155,43 +157,54 @@ type TakeoffTemplate = {
   style: TakeoffStyle;
 };
 
+type LinearBase = {
+  id: string;
+  page: number;
+  a: Point;
+  b: Point;
+  style: TakeoffStyle;
+  templateId?: string;
+  templateName?: string;
+  category?: string;
+  uom?: string;
+  isMarkup?: boolean;
+};
+
+type MeasureItem = LinearBase & {
+  kind: "measure";
+};
+
+type LineItem = LinearBase & {
+  kind: "line";
+  pts?: Point[];
+  closed?: boolean;
+  strokeWidth?: number;
+  dashed?: boolean;
+  arrowEnd?: boolean;
+};
+
+type CountItem = {
+  id: string;
+  kind: "count";
+  page: number;
+  p: Point;
+  style: TakeoffStyle;
+
+  templateId?: string;
+  templateName?: string;
+  category?: string;
+  uom?: string;
+  isMarkup?: boolean;
+
+  /** Optional label/value for UI display (defaults shown if undefined). */
+  label?: string;
+  value?: number;
+};
+
 type TakeoffItem =
-  | {
-      id: string;
-      kind: "measure" | "line";
-      page: number;
-      a: Point;
-      b: Point;
-      style: TakeoffStyle;
-      pts?: Point[];
-      closed?: boolean;
-      strokeWidth?: number;
-      dashed?: boolean;
-      arrowEnd?: boolean;
-
-      templateId?: string;
-      templateName?: string;
-      category?: string;
-      uom?: string;
-      isMarkup?: boolean;
-    }
-  | {
-      id: string;
-      kind: "count";
-      page: number;
-      p: Point;
-      style: TakeoffStyle;
-
-      templateId?: string;
-      templateName?: string;
-      category?: string;
-      uom?: string;
-      isMarkup?: boolean;
-
-      /** Optional label/value for UI display (defaults shown if undefined). */
-      label?: string;
-      value?: number;
-    }
+  | MeasureItem
+  | LineItem
+  | CountItem
   | {
       id: string;
       kind: "area";
@@ -205,8 +218,6 @@ type TakeoffItem =
       uom?: string;
       isMarkup?: boolean;
     };
-
-type LineItem = Extract<TakeoffItem, { kind: "line" }>;
 
 function isLineItem(it: TakeoffItem): it is LineItem {
   return it.kind === "line";
@@ -238,6 +249,14 @@ type Segment = { a: Point; b: Point };
 
 function clamp(n: number, min: number, max: number) {
   return Math.max(min, Math.min(max, n));
+}
+
+function colorForUser(id: string) {
+  let hash = 0;
+  for (let i = 0; i < id.length; i += 1) {
+    hash = (hash * 31 + id.charCodeAt(i)) % 360;
+  }
+  return `hsl(${hash} 70% 50%)`;
 }
 
 function dist(a: Point, b: Point) {
@@ -469,6 +488,16 @@ function formatArea(m2: number, unit: Calibration["displayUnit"]) {
   return `${m2.toFixed(2)} m²`;
 }
 
+function squaredUnitLabel(unit: Calibration["displayUnit"]) {
+  if (unit === "mm") return "mm2";
+  if (unit === "cm") return "cm2";
+  if (unit === "m") return "m2";
+  if (unit === "ft") return "ft2";
+  if (unit === "in") return "in2";
+  return `${unit}2`;
+}
+
+
 
 function safeId() {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -508,6 +537,30 @@ function isTypingTarget(target: EventTarget | null) {
 
 function viewerStateKey(docId: string) {
   return `${VIEWER_STATE_STORAGE_PREFIX}:${docId}`;
+}
+
+function takeoffCacheKey(docId: string) {
+  return `${TAKEOFF_CACHE_PREFIX}:${docId}`;
+}
+
+function loadTakeoffCache(docId: string): TakeoffItem[] | null {
+  try {
+    const raw = localStorage.getItem(takeoffCacheKey(docId));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return null;
+    return parsed as TakeoffItem[];
+  } catch {
+    return null;
+  }
+}
+
+function saveTakeoffCache(docId: string, items: TakeoffItem[]) {
+  try {
+    localStorage.setItem(takeoffCacheKey(docId), JSON.stringify(items));
+  } catch {
+    // ignore
+  }
 }
 
 function loadViewerState(docId: string): { pageNumber: number; rotation: number; uiZoom: number } | null {
@@ -737,6 +790,7 @@ export function TakeoffWorkspaceContent({
 }) {
   const navigate = useNavigate();
   const { user } = useAuth();
+  useProjectPresence(projectId, { enabled: !embedded });
 
   // Panels
   const [leftOpen, setLeftOpen] = useState(true);
@@ -761,6 +815,18 @@ export function TakeoffWorkspaceContent({
   });
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [shortcutDraft, setShortcutDraft] = useState<ShortcutMap>(() => ({ ...DEFAULT_SHORTCUTS }));
+
+  // Collaboration (presence + cursors + selection)
+  const [collabUsers, setCollabUsers] = useState<Record<string, { id: string; name: string; color: string }>>({});
+  const [remoteCursors, setRemoteCursors] = useState<
+    Record<string, { x: number; y: number; page: number; ts: number }>
+  >({});
+  const [remoteSelections, setRemoteSelections] = useState<
+    Record<string, { id: string; page: number; ts: number }>
+  >({});
+  const collabChannelRef = useRef<any>(null);
+  const cursorFrameRef = useRef<number | null>(null);
+  const pendingCursorRef = useRef<{ x: number; y: number; page: number } | null>(null);
 
   useEffect(() => {
     if (shortcutsOpen) setShortcutDraft(shortcuts);
@@ -856,6 +922,7 @@ export function TakeoffWorkspaceContent({
   const [calibrateValueStr, setCalibrateValueStr] = useState("1");
   const [calibrateUnit, setCalibrateUnit] = useState<Calibration["displayUnit"]>("m");
   const [calibrateLabel, setCalibrateLabel] = useState("");
+  const [calibrateAsDocDefault, setCalibrateAsDocDefault] = useState(false);
 
   // Keyboard
   const toolRef = useRef<Tool>(tool);
@@ -895,6 +962,76 @@ export function TakeoffWorkspaceContent({
   useEffect(() => {
     itemsRef.current = items;
   }, [items]);
+
+  const [activeDocId, setActiveDocId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!projectId || !activeDocId || !user?.id) return;
+
+    const channel = db.channel(`takeoff-collab-${projectId}-${activeDocId}`, {
+      config: { presence: { key: user.id } },
+    });
+
+    channel.on("presence", { event: "sync" }, () => {
+      const state = channel.presenceState?.() ?? {};
+      const next: Record<string, { id: string; name: string; color: string }> = {};
+      Object.values(state).forEach((entries: any) => {
+        const entry = Array.isArray(entries) ? entries[0] : entries;
+        if (!entry?.userId) return;
+        next[entry.userId] = {
+          id: entry.userId,
+          name: entry.name ?? "User",
+          color: entry.color ?? colorForUser(entry.userId),
+        };
+      });
+      setCollabUsers(next);
+    });
+
+    channel.on("broadcast", { event: "cursor" }, (payload: any) => {
+      const data = payload?.payload;
+      if (!data?.userId || data.userId === user.id) return;
+      setRemoteCursors((prev) => ({
+        ...prev,
+        [data.userId]: { x: data.x, y: data.y, page: data.page, ts: Date.now() },
+      }));
+    });
+
+    channel.on("broadcast", { event: "selection" }, (payload: any) => {
+      const data = payload?.payload;
+      if (!data?.userId || data.userId === user.id) return;
+      setRemoteSelections((prev) => ({
+        ...prev,
+        [data.userId]: { id: data.id, page: data.page, ts: Date.now() },
+      }));
+    });
+
+    channel.subscribe((status: string) => {
+      if (status !== "SUBSCRIBED") return;
+      channel.track({
+        userId: user.id,
+        name: user.email ?? "User",
+        color: colorForUser(user.id),
+      });
+    });
+
+    collabChannelRef.current = channel;
+    return () => {
+      setRemoteCursors({});
+      setRemoteSelections({});
+      setCollabUsers({});
+      collabChannelRef.current = null;
+      db.removeChannel(channel);
+    };
+  }, [projectId, activeDocId, user?.id]);
+
+  useEffect(() => {
+    if (!collabChannelRef.current || !activeDocId || !user?.id) return;
+    collabChannelRef.current.send({
+      type: "broadcast",
+      event: "selection",
+      payload: { userId: user.id, id: selectedId, page: pageNumber },
+    });
+  }, [selectedId, pageNumber, activeDocId, user?.id]);
 
   function findLastEndpoint(kind: "line" | "area" | "count") {
     const tpl = activeTemplateRef.current;
@@ -993,7 +1130,7 @@ export function TakeoffWorkspaceContent({
         const lastFromItems = (kind: "line" | "area" | "count") => findLastEndpoint(kind);
 
         const commitLineDraft = () => {
-          if (!currentLine?.pts?.length || currentLine.pts.length < 2) return;
+          if (!currentLine?.pts?.length || currentLine.pts.length < 2) return null;
           const tpl = currentTpl && currentTpl.kind === "line" ? currentTpl : null;
           const meta = tpl
             ? {
@@ -1010,26 +1147,26 @@ export function TakeoffWorkspaceContent({
             strokeWidth: 3,
             arrowEnd: false,
           };
-          commitItems((itemsPrev) => {
-            const next = [...itemsPrev];
-            for (let i = 0; i < currentLine.pts.length - 1; i += 1) {
-              next.push({
-                id: safeId(),
-                kind: "line",
-                page: currentPage,
-                a: currentLine.pts[i],
-                b: currentLine.pts[i + 1],
-                ...lineProps,
-                style: tpl?.style ?? { token: pickNextColorToken(itemsPrev) },
-                ...meta,
-              });
-            }
-            return next;
-          });
+          const pts = currentLine.pts.slice();
+          commitItems((itemsPrev) => [
+            ...itemsPrev,
+            {
+              id: safeId(),
+              kind: "line",
+              page: currentPage,
+              a: pts[0],
+              b: pts[pts.length - 1],
+              pts,
+              ...lineProps,
+              style: tpl?.style ?? { token: pickNextColorToken(itemsPrev) },
+              ...meta,
+            },
+          ]);
+          return pts[pts.length - 1] ?? null;
         };
 
         const commitAreaDraft = () => {
-          if (!currentArea?.pts?.length || currentArea.pts.length < 3) return;
+          if (!currentArea?.pts?.length || currentArea.pts.length < 3) return null;
           const tpl = currentTpl && currentTpl.kind === "area" ? currentTpl : null;
           const meta = tpl
             ? {
@@ -1051,33 +1188,38 @@ export function TakeoffWorkspaceContent({
               ...meta,
             },
           ]);
+          return currentArea.pts[currentArea.pts.length - 1] ?? null;
         };
 
         if (currentTool === "line") {
-          const lastPoint =
-            key === "r"
-              ? lastFromItems("line")
-              : currentLine?.pts?.length
-                ? currentLine.pts[currentLine.pts.length - 1]
-                : lastFromItems("line");
-          if (key === "n") commitLineDraft();
-          setLineDraft(lastPoint ? { pts: [lastPoint], cursor: lastPoint } : null);
+          if (key === "n") {
+            const lastPoint = commitLineDraft() ?? lastFromItems("line");
+            setLineDraft(lastPoint ? { pts: [lastPoint], cursor: lastPoint } : null);
+          } else {
+            const selectedId = selectedIdRef.current;
+            const selected = selectedId ? itemsRef.current.find((it) => it.id === selectedId) : null;
+            const selectedLast =
+              selected && selected.kind === "line" && selected.pts?.length
+                ? selected.pts[selected.pts.length - 1]
+                : null;
+            const lastPoint = selectedLast ?? lastFromItems("line");
+            setLineDraft(lastPoint ? { pts: [lastPoint], cursor: lastPoint } : null);
+          }
           lineDragRef.current = null;
-          setSnapIndicator(lastPoint ?? null);
+          setSnapIndicator(null);
           return;
         }
 
         if (currentTool === "area") {
-          const lastPoint =
-            key === "r"
-              ? lastFromItems("area")
-              : currentArea?.pts?.length
-                ? currentArea.pts[currentArea.pts.length - 1]
-                : lastFromItems("area");
-          if (key === "n") commitAreaDraft();
-          setAreaDraft(lastPoint ? { pts: [lastPoint], cursor: lastPoint } : null);
+          if (key === "n") {
+            const lastPoint = commitAreaDraft() ?? lastFromItems("area");
+            setAreaDraft(lastPoint ? { pts: [lastPoint], cursor: lastPoint } : null);
+          } else {
+            const lastPoint = lastFromItems("area");
+            setAreaDraft(lastPoint ? { pts: [lastPoint], cursor: lastPoint } : null);
+          }
           areaDragRef.current = null;
-          setSnapIndicator(lastPoint ?? null);
+          setSnapIndicator(null);
           return;
         }
 
@@ -1151,8 +1293,6 @@ export function TakeoffWorkspaceContent({
     },
   });
 
-  const [activeDocId, setActiveDocId] = useState<string | null>(null);
-
   useEffect(() => {
     if (activeDocId) return;
     if (documents.length) setActiveDocId(documents[0].id);
@@ -1189,6 +1329,7 @@ export function TakeoffWorkspaceContent({
   const [uiZoom, setUiZoom] = useState(1);
   const uiZoomRef = useRef(uiZoom);
   const [renderScale, setRenderScale] = useState(PDF_RENDER_SCALE);
+  const [renderQualityBoost, setRenderQualityBoost] = useState(false);
   const renderScaleTimerRef = useRef<number | null>(null);
   const zoomAnimFrameRef = useRef<number | null>(null);
 
@@ -1201,7 +1342,8 @@ export function TakeoffWorkspaceContent({
       window.clearTimeout(renderScaleTimerRef.current);
     }
     renderScaleTimerRef.current = window.setTimeout(() => {
-      const nextScale = clamp(Number((PDF_RENDER_SCALE * uiZoom).toFixed(3)), 0.8, 4);
+      const baseScale = renderQualityBoost ? PDF_RENDER_SCALE : 1;
+      const nextScale = clamp(Number((baseScale * uiZoom).toFixed(3)), 0.8, 4);
       setRenderScale(nextScale);
     }, 150);
 
@@ -1210,12 +1352,34 @@ export function TakeoffWorkspaceContent({
         window.clearTimeout(renderScaleTimerRef.current);
       }
     };
-  }, [uiZoom]);
+  }, [uiZoom, renderQualityBoost]);
 
   const [legendState, setLegendState] = useState<LegendState>(DEFAULT_LEGEND_STATE);
   const viewerStateLoadedRef = useRef(false);
   const legendStateLoadedRef = useRef(false);
   const preferredPageRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (!pdfDoc) return;
+    setRenderQualityBoost(false);
+    let handle: ReturnType<typeof setTimeout> | number | null = null;
+    const promote = () => setRenderQualityBoost(true);
+    const root = globalThis as any;
+    if (typeof root.requestIdleCallback === "function") {
+      handle = root.requestIdleCallback(promote, { timeout: 2000 });
+    } else {
+      handle = setTimeout(promote, 800);
+    }
+    return () => {
+      if (handle != null) {
+        if (typeof root.cancelIdleCallback === "function") {
+          root.cancelIdleCallback(handle);
+        } else {
+          clearTimeout(handle);
+        }
+      }
+    };
+  }, [pdfDoc, pageNumber, rotation]);
 
   useEffect(() => {
     viewerStateLoadedRef.current = false;
@@ -1264,6 +1428,81 @@ export function TakeoffWorkspaceContent({
       cancelled = true;
     };
   }, [activeDocId, projectId, user?.id]);
+
+  useEffect(() => {
+    if (!activeDocId || !projectId) return;
+
+    const channel = db
+      .channel(`takeoff-items-sync-${activeDocId}`)
+      .on(
+        "postgres_changes",
+        { event: "UPDATE", schema: "public", table: "takeoff_items", filter: `document_id=eq.${activeDocId}` },
+        (payload: any) => {
+          const next = payload?.new;
+          if (!next?.id) return;
+          const meta = next.meta ?? {};
+
+          setItems((prev) => {
+            let changed = false;
+            const updated = prev.map((it) => {
+              if (it.id !== next.id) return it;
+              const templateName = meta.templateName ?? it.templateName;
+              const category = meta.category ?? it.category;
+              const uom = meta.uom ?? it.uom;
+              const isMarkup = meta.isMarkup ?? it.isMarkup;
+
+              if (it.kind === "count") {
+                const nextLabel = meta.label ?? it.label;
+                const nextValue = meta.value ?? it.value;
+                if (
+                  templateName === it.templateName &&
+                  category === it.category &&
+                  uom === it.uom &&
+                  isMarkup === it.isMarkup &&
+                  nextLabel === it.label &&
+                  nextValue === it.value
+                ) {
+                  return it;
+                }
+                changed = true;
+                return {
+                  ...it,
+                  templateName,
+                  category,
+                  uom,
+                  isMarkup,
+                  label: nextLabel,
+                  value: nextValue,
+                };
+              }
+
+              if (
+                templateName === it.templateName &&
+                category === it.category &&
+                uom === it.uom &&
+                isMarkup === it.isMarkup
+              ) {
+                return it;
+              }
+              changed = true;
+              return {
+                ...it,
+                templateName,
+                category,
+                uom,
+                isMarkup,
+              };
+            });
+            return changed ? updated : prev;
+          });
+        }
+      )
+      .subscribe();
+
+    return () => {
+      db.removeChannel(channel);
+    };
+  }, [activeDocId, projectId]);
 
   useEffect(() => {
     if (!activeDocId || !projectId || !user?.id) return;
@@ -1396,9 +1635,15 @@ export function TakeoffWorkspaceContent({
       return;
     }
 
-    let cancelled = false;
+    if (!snapEnabled) {
+      setPdfSegments([]);
+      return;
+    }
 
-    (async () => {
+    let cancelled = false;
+    let idleHandle: ReturnType<typeof setTimeout> | number | null = null;
+
+    const work = async () => {
       try {
         const page = await pdfDoc.getPage(pageNumber);
         if (cancelled) return;
@@ -1531,12 +1776,26 @@ export function TakeoffWorkspaceContent({
       } catch {
         if (!cancelled) setPdfSegments([]);
       }
-    })();
+    };
+
+    const root = globalThis as any;
+    if (typeof root.requestIdleCallback === "function") {
+      idleHandle = root.requestIdleCallback(work, { timeout: 1500 });
+    } else {
+      idleHandle = setTimeout(work, 250);
+    }
 
     return () => {
       cancelled = true;
+      if (idleHandle != null) {
+        if (typeof root.cancelIdleCallback === "function") {
+          root.cancelIdleCallback(idleHandle);
+        } else {
+          clearTimeout(idleHandle);
+        }
+      }
     };
-  }, [pdfDoc, pageNumber, rotation]);
+  }, [pdfDoc, pageNumber, rotation, snapEnabled]);
 
   // Fit once per page open
   const fitDoneRef = useRef<Record<string, boolean>>({});
@@ -1761,9 +2020,15 @@ export function TakeoffWorkspaceContent({
 function snapPointToExisting(p: Point) {
   if (!snapEnabled) return p;
 
-  const tol = 8 / Math.max(uiZoom, 0.0001); // ~8px on screen
-  let best: { p: Point; d: number } | null = null;
+  const tol = 10 / Math.max(uiZoom, 0.0001); // ~10px on screen
+  let best: { p: Point; d: number; score: number } | null = null;
   const candidates: Array<{ seg: Segment; d: number }> = [];
+
+  const consider = (candidate: Point, d: number, weight: number) => {
+    if (d > tol) return;
+    const score = d * weight;
+    if (!best || score < best.score) best = { p: candidate, d, score };
+  };
 
   const addCandidate = (a: Point, b: Point) => {
     const d = distToSegment(p, a, b);
@@ -1772,14 +2037,14 @@ function snapPointToExisting(p: Point) {
 
   for (const seg of pdfSegments) {
     const d = distToSegment(p, seg.a, seg.b);
-    if (d <= tol && (!best || d < best.d)) {
+    if (d <= tol) {
       const abx = seg.b.x - seg.a.x;
       const aby = seg.b.y - seg.a.y;
       const apx = p.x - seg.a.x;
       const apy = p.y - seg.a.y;
       const denom = abx * abx + aby * aby;
       const t = denom <= 0.000001 ? 0 : Math.max(0, Math.min(1, (apx * abx + apy * aby) / denom));
-      best = { p: { x: seg.a.x + t * abx, y: seg.a.y + t * aby }, d };
+      consider({ x: seg.a.x + t * abx, y: seg.a.y + t * aby }, d, 1);
     }
     addCandidate(seg.a, seg.b);
   }
@@ -1787,7 +2052,7 @@ function snapPointToExisting(p: Point) {
   for (const it of pageItems) {
     if (it.kind === "count") {
       const d = dist(p, it.p);
-      if (d <= tol && (!best || d < best.d)) best = { p: it.p, d };
+      consider(it.p, d, 0.6);
       continue;
     }
 
@@ -1797,14 +2062,14 @@ function snapPointToExisting(p: Point) {
         const a = pts[i];
         const b = pts[(i + 1) % pts.length];
         const d = distToSegment(p, a, b);
-        if (d <= tol && (!best || d < best.d)) {
+        if (d <= tol) {
           const abx = b.x - a.x;
           const aby = b.y - a.y;
           const apx = p.x - a.x;
           const apy = p.y - a.y;
           const denom = abx * abx + aby * aby;
           const t = denom <= 0.000001 ? 0 : Math.max(0, Math.min(1, (apx * abx + apy * aby) / denom));
-          best = { p: { x: a.x + t * abx, y: a.y + t * aby }, d };
+          consider({ x: a.x + t * abx, y: a.y + t * aby }, d, 1);
         }
         addCandidate(a, b);
       }
@@ -1818,17 +2083,17 @@ function snapPointToExisting(p: Point) {
         const endpoints = [a, b];
         for (const c of endpoints) {
           const d = dist(p, c);
-          if (d <= tol && (!best || d < best.d)) best = { p: c, d };
+          consider(c, d, 0.6);
         }
         const d = distToSegment(p, a, b);
-        if (d <= tol && (!best || d < best.d)) {
+        if (d <= tol) {
           const abx = b.x - a.x;
           const aby = b.y - a.y;
           const apx = p.x - a.x;
           const apy = p.y - a.y;
           const denom = abx * abx + aby * aby;
           const t = denom <= 0.000001 ? 0 : Math.max(0, Math.min(1, (apx * abx + apy * aby) / denom));
-          best = { p: { x: a.x + t * abx, y: a.y + t * aby }, d };
+          consider({ x: a.x + t * abx, y: a.y + t * aby }, d, 1);
         }
         addCandidate(a, b);
       }
@@ -1839,17 +2104,17 @@ function snapPointToExisting(p: Point) {
     const endpoints = [it.a, it.b];
     for (const c of endpoints) {
       const d = dist(p, c);
-      if (d <= tol && (!best || d < best.d)) best = { p: c, d };
+      consider(c, d, 0.6);
     }
     const d = distToSegment(p, it.a, it.b);
-    if (d <= tol && (!best || d < best.d)) {
+    if (d <= tol) {
       const abx = it.b.x - it.a.x;
       const aby = it.b.y - it.a.y;
       const apx = p.x - it.a.x;
       const apy = p.y - it.a.y;
       const denom = abx * abx + aby * aby;
       const t = denom <= 0.000001 ? 0 : Math.max(0, Math.min(1, (apx * abx + apy * aby) / denom));
-      best = { p: { x: it.a.x + t * abx, y: it.a.y + t * aby }, d };
+      consider({ x: it.a.x + t * abx, y: it.a.y + t * aby }, d, 1);
     }
     addCandidate(it.a, it.b);
   }
@@ -1864,7 +2129,7 @@ function snapPointToExisting(p: Point) {
         const inter = segmentIntersection(limited[i].a, limited[i].b, limited[j].a, limited[j].b);
         if (!inter) continue;
         const d = dist(p, inter);
-        if (d <= tol && (!best || d < best.d)) best = { p: inter, d };
+        consider(inter, d, 0.8);
       }
     }
   }
@@ -2305,10 +2570,10 @@ function onOverlayPointerDown(e: React.PointerEvent, wrapperEl: HTMLElement) {
   }
 }
 
-function onOverlayPointerMove(e: React.PointerEvent, wrapperEl: HTMLElement) {
-  if (!pdfDoc) return;
+  function onOverlayPointerMove(e: React.PointerEvent, wrapperEl: HTMLElement) {
+    if (!pdfDoc) return;
 
-  if (tool === "select" && dragRef.current) {
+    if (tool === "select" && dragRef.current) {
     const raw = docPointFromEvent(e, wrapperEl);
     const p = snapPointToExisting(raw);
     setSnapIndicator(p.x !== raw.x || p.y !== raw.y ? p : null);
@@ -2390,6 +2655,22 @@ function onOverlayPointerMove(e: React.PointerEvent, wrapperEl: HTMLElement) {
   const raw = docPointFromEvent(e, wrapperEl);
   const hoverSnap = snapPointToExisting(raw);
   setSnapIndicator(hoverSnap.x !== raw.x || hoverSnap.y !== raw.y ? hoverSnap : null);
+
+  if (collabChannelRef.current && user?.id) {
+    pendingCursorRef.current = { x: raw.x, y: raw.y, page: pageNumber };
+    if (!cursorFrameRef.current) {
+      cursorFrameRef.current = requestAnimationFrame(() => {
+        cursorFrameRef.current = null;
+        const pending = pendingCursorRef.current;
+        if (!pending || !collabChannelRef.current) return;
+        collabChannelRef.current.send({
+          type: "broadcast",
+          event: "cursor",
+          payload: { userId: user.id, ...pending },
+        });
+      });
+    }
+  }
 
   const hasActivePreview =
     (tool === "scale" && !!scaleDraft?.a) ||
@@ -2506,26 +2787,22 @@ function onOverlayDoubleClick(e: React.MouseEvent) {
       strokeWidth: 3,
       arrowEnd: false,
     };
-    let lastId: string | null = null;
-    commitItems((itemsPrev) => {
-      const next = [...itemsPrev];
-      for (let i = 0; i < pts.length - 1; i += 1) {
-        const id = safeId();
-        lastId = id;
-        next.push({
-          id,
-          kind: "line",
-          page: pageNumber,
-          a: pts[i],
-          b: pts[i + 1],
-          ...lineProps,
-          style: tpl?.style ?? { token: pickNextColorToken(itemsPrev) },
-          ...meta,
-        });
-      }
-      return next;
-    });
-    if (lastId) setSelectedId(lastId);
+    const nextId = safeId();
+    commitItems((itemsPrev) => [
+      ...itemsPrev,
+      {
+        id: nextId,
+        kind: "line",
+        page: pageNumber,
+        a: pts[0],
+        b: pts[pts.length - 1],
+        pts,
+        ...lineProps,
+        style: tpl?.style ?? { token: pickNextColorToken(itemsPrev) },
+        ...meta,
+      },
+    ]);
+    setSelectedId(nextId);
     setLineDraft(null);
     return;
   }
@@ -2568,10 +2845,12 @@ function onOverlayDoubleClick(e: React.MouseEvent) {
 
   // Calibration storage
   const [calibration, setCalibration] = useState<Calibration | null>(null);
+  const [docCalibration, setDocCalibration] = useState<Calibration | null>(null);
   const [calibrationByPage, setCalibrationByPage] = useState<Map<number, Calibration>>(new Map());
   useEffect(() => {
     if (!activeDocId || !projectId || !user?.id) {
       setCalibration(null);
+      setDocCalibration(null);
       setCalibrationByPage(new Map());
       return;
     }
@@ -2614,6 +2893,46 @@ function onOverlayDoubleClick(e: React.MouseEvent) {
 
   useEffect(() => {
     if (!activeDocId || !projectId || !user?.id) {
+      setDocCalibration(null);
+      return;
+    }
+
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const { data, error } = await db
+          .from("takeoff_calibrations")
+          .select("meters_per_doc_px,display_unit,label")
+          .eq("document_id", activeDocId)
+          .is("page_number", null)
+          .maybeSingle();
+
+        if (error) throw error;
+        if (cancelled) return;
+
+        if (data?.meters_per_doc_px) {
+          setDocCalibration({
+            metersPerDocPx: Number(data.meters_per_doc_px),
+            displayUnit: (data.display_unit as Calibration["displayUnit"]) ?? "m",
+            label: data.label ?? undefined,
+          });
+        } else {
+          setDocCalibration(null);
+        }
+      } catch {
+        if (cancelled) return;
+        setDocCalibration(null);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeDocId, projectId, user?.id]);
+
+  useEffect(() => {
+    if (!activeDocId || !projectId || !user?.id) {
       setCalibrationByPage(new Map());
       return;
     }
@@ -2650,6 +2969,9 @@ function onOverlayDoubleClick(e: React.MouseEvent) {
       cancelled = true;
     };
   }, [activeDocId, projectId, user?.id]);
+
+  const effectiveCalibration = calibration ?? docCalibration;
+  const calibrationSource = calibration ? "page" : docCalibration ? "document" : null;
 
   function persistCalibration(next: Calibration | null) {
     void (async () => {
@@ -2701,6 +3023,60 @@ function onOverlayDoubleClick(e: React.MouseEvent) {
     })();
   }
 
+  function persistDocCalibration(next: Calibration | null) {
+    void (async () => {
+      if (!activeDocId || !projectId || !user?.id) {
+        setDocCalibration(next);
+        return;
+      }
+
+      if (!next) {
+        setDocCalibration(null);
+        const { error } = await db
+          .from("takeoff_calibrations")
+          .delete()
+          .eq("document_id", activeDocId)
+          .is("page_number", null);
+        if (error) {
+          toast({
+            title: "Document scale not cleared",
+            description: error.message,
+            variant: "destructive",
+          });
+        }
+        return;
+      }
+
+      setDocCalibration(next);
+
+      const payload = {
+        project_id: projectId,
+        document_id: activeDocId,
+        page_number: null,
+        owner_id: user.id,
+        meters_per_doc_px: next.metersPerDocPx,
+        display_unit: next.displayUnit,
+        label: next.label ?? null,
+      };
+
+      await db
+        .from("takeoff_calibrations")
+        .delete()
+        .eq("document_id", activeDocId)
+        .is("page_number", null);
+
+      const { error } = await db.from("takeoff_calibrations").insert(payload);
+
+      if (error) {
+        toast({
+          title: "Document scale not saved",
+          description: error.message,
+          variant: "destructive",
+        });
+      }
+    })();
+  }
+
   // When scaleDraft gets both points, open the calibration dialog (non-blocking)
   useEffect(() => {
     if (tool !== "scale") return;
@@ -2711,9 +3087,10 @@ function onOverlayDoubleClick(e: React.MouseEvent) {
     if (!isFinite(px) || px <= 0) return;
 
     setCalibratePx(px);
-    setCalibrateUnit(calibration?.displayUnit ?? "m");
+    setCalibrateUnit(effectiveCalibration?.displayUnit ?? "m");
     setCalibrateValueStr("1");
-    setCalibrateLabel(calibration?.label ?? "");
+    setCalibrateLabel(effectiveCalibration?.label ?? "");
+    setCalibrateAsDocDefault(false);
     setCalibrateOpen(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tool, scaleDraft?.a, scaleDraft?.b]);
@@ -2721,6 +3098,7 @@ function onOverlayDoubleClick(e: React.MouseEvent) {
   function cancelCalibration() {
     setCalibrateOpen(false);
     setCalibratePx(null);
+    setCalibrateAsDocDefault(false);
     setScaleDraft(null);
     setTool("select");
   }
@@ -2751,6 +3129,9 @@ function onOverlayDoubleClick(e: React.MouseEvent) {
     };
 
     persistCalibration(next);
+    if (calibrateAsDocDefault) {
+      persistDocCalibration(next);
+    }
 
     toast({
       title: "Scale calibrated",
@@ -2765,19 +3146,19 @@ function onOverlayDoubleClick(e: React.MouseEvent) {
 
   // Derived quantities for drafts
   const draftLengthMeters = useMemo(() => {
-    if (!draft || !calibration) return null;
+    if (!draft || !effectiveCalibration) return null;
     const px = dist(draft.a, draft.b);
-    return px * calibration.metersPerDocPx;
-  }, [draft, calibration]);
+    return px * effectiveCalibration.metersPerDocPx;
+  }, [draft, effectiveCalibration]);
 
   const areaDraftMeters2 = useMemo(() => {
-    if (!areaDraft || !calibration) return null;
+    if (!areaDraft || !effectiveCalibration) return null;
     const px2 = polygonArea(areaDraft.pts);
-    return px2 * calibration.metersPerDocPx * calibration.metersPerDocPx;
-  }, [areaDraft, calibration]);
+    return px2 * effectiveCalibration.metersPerDocPx * effectiveCalibration.metersPerDocPx;
+  }, [areaDraft, effectiveCalibration]);
 
   const lineDraftMeters = useMemo(() => {
-    if (!lineDraft || !calibration) return null;
+    if (!lineDraft || !effectiveCalibration) return null;
     const pts = lineDraft.pts.length ? [...lineDraft.pts] : [];
     if (lineDraft.cursor) pts.push(lineDraft.cursor);
     if (pts.length < 2) return 0;
@@ -2785,8 +3166,8 @@ function onOverlayDoubleClick(e: React.MouseEvent) {
     for (let i = 0; i < pts.length - 1; i += 1) {
       px += dist(pts[i], pts[i + 1]);
     }
-    return px * calibration.metersPerDocPx;
-  }, [lineDraft, calibration]);
+    return px * effectiveCalibration.metersPerDocPx;
+  }, [lineDraft, effectiveCalibration]);
 
   // Load PDF when activeDoc changes
   useEffect(() => {
@@ -2822,7 +3203,14 @@ function onOverlayDoubleClick(e: React.MouseEvent) {
 
         setSignedUrl(data.signedUrl);
 
-        const pdf = await getDocument({ url: data.signedUrl }).promise;
+        const loadingTask = getDocument({
+          url: data.signedUrl,
+          disableAutoFetch: false,
+          disableStream: false,
+          disableRange: false,
+          rangeChunkSize: 65536,
+        });
+        const pdf = await loadingTask.promise;
         if (cancelled) return;
 
         setPdfDoc(pdf);
@@ -2846,11 +3234,15 @@ function onOverlayDoubleClick(e: React.MouseEvent) {
   // Items (Supabase persistence)
   const didLoadItemsRef = useRef(false);
   const loadedItemIdsRef = useRef<Set<string>>(new Set());
+  const loadedFromSupabaseRef = useRef(false);
   const saveItemsTimerRef = useRef<number | null>(null);
+  const takeoffSyncChannelRef = useRef<BroadcastChannel | null>(null);
+  const lastActivityAtRef = useRef<number>(0);
 
   useEffect(() => {
     didLoadItemsRef.current = false;
     loadedItemIdsRef.current = new Set();
+    loadedFromSupabaseRef.current = false;
 
     if (!activeDocId || !projectId || !user?.id) {
       setItems([]);
@@ -2859,6 +3251,11 @@ function onOverlayDoubleClick(e: React.MouseEvent) {
     }
 
     let cancelled = false;
+    const cachedItems = loadTakeoffCache(activeDocId);
+    if (cachedItems?.length) {
+      setItems(cachedItems);
+      loadedItemIdsRef.current = new Set(cachedItems.map((it) => it.id));
+    }
 
     (async () => {
       try {
@@ -2969,6 +3366,8 @@ function onOverlayDoubleClick(e: React.MouseEvent) {
 
         setItems(nextItems);
         loadedItemIdsRef.current = new Set(ids);
+        loadedFromSupabaseRef.current = true;
+        saveTakeoffCache(activeDocId, nextItems);
       } catch (err: any) {
         if (cancelled) return;
         toast({
@@ -2976,7 +3375,9 @@ function onOverlayDoubleClick(e: React.MouseEvent) {
           description: err?.message ?? "Failed to load takeoff items from Supabase.",
           variant: "destructive",
         });
-        setItems([]);
+        if (!cachedItems?.length) {
+          setItems([]);
+        }
       } finally {
         didLoadItemsRef.current = true;
       }
@@ -2986,6 +3387,15 @@ function onOverlayDoubleClick(e: React.MouseEvent) {
       cancelled = true;
     };
   }, [activeDocId, projectId, user?.id]);
+
+  useEffect(() => {
+    if (typeof BroadcastChannel === "undefined") return;
+    takeoffSyncChannelRef.current = new BroadcastChannel("aostot-takeoff-sync");
+    return () => {
+      takeoffSyncChannelRef.current?.close();
+      takeoffSyncChannelRef.current = null;
+    };
+  }, []);
 
   async function syncTakeoffItems(currentItems: TakeoffItem[]) {
     if (!activeDocId || !projectId || !user?.id) return;
@@ -3035,7 +3445,9 @@ function onOverlayDoubleClick(e: React.MouseEvent) {
     });
 
     const nextIds = new Set(currentItems.map((it) => it.id));
-    const removedIds = Array.from(loadedItemIdsRef.current).filter((id) => !nextIds.has(id));
+    const removedIds = loadedFromSupabaseRef.current
+      ? Array.from(loadedItemIdsRef.current).filter((id) => !nextIds.has(id))
+      : [];
 
     try {
       if (itemRows.length) {
@@ -3056,6 +3468,32 @@ function onOverlayDoubleClick(e: React.MouseEvent) {
       }
 
       loadedItemIdsRef.current = nextIds;
+      loadedFromSupabaseRef.current = true;
+      takeoffSyncChannelRef.current?.postMessage({
+        type: "takeoff_items_changed",
+        projectId,
+        documentId: activeDocId,
+        ts: Date.now(),
+      });
+
+      const now = Date.now();
+      if (now - lastActivityAtRef.current > 30000) {
+        lastActivityAtRef.current = now;
+        const meta = {
+          documentId: activeDocId,
+          documentName: activeDoc?.file_name ?? null,
+          itemCount: currentItems.length,
+          actorName: user.email ?? null,
+        };
+        void db.from("project_activity").insert({
+          project_id: projectId,
+          actor_id: user.id,
+          action: "takeoff_updated",
+          entity_type: "takeoff",
+          entity_id: null,
+          meta,
+        });
+      }
     } catch (err: any) {
       toast({
         title: "Takeoff items not saved",
@@ -3074,6 +3512,7 @@ function onOverlayDoubleClick(e: React.MouseEvent) {
     }
 
     saveItemsTimerRef.current = window.setTimeout(() => {
+      saveTakeoffCache(activeDocId, items);
       void syncTakeoffItems(items);
     }, 600);
 
@@ -3154,13 +3593,44 @@ function duplicateSelected() {
   toast({ title: "Duplicated", description: itemDisplayName(it) });
 }
 
-function updateSelectedLine(next: Partial<TakeoffItem>) {
+type SelectedMetaUpdate = {
+  templateName?: string;
+  category?: string;
+  uom?: string;
+  label?: string;
+  value?: number;
+};
+
+function updateSelectedMeta(next: SelectedMetaUpdate) {
+  if (!selectedId) return;
+  setItems((prev) =>
+    prev.map((it) => {
+      if (it.id !== selectedId) return it;
+      if (it.kind === "count") {
+        const updated = { ...it } as CountItem;
+        if (next.templateName !== undefined) updated.templateName = next.templateName;
+        if (next.category !== undefined) updated.category = next.category;
+        if (next.uom !== undefined) updated.uom = next.uom;
+        if (next.label !== undefined) updated.label = next.label;
+        if (next.value !== undefined && Number.isFinite(next.value)) updated.value = next.value;
+        return updated;
+      }
+      const updated = { ...it } as TakeoffItem;
+      if (next.templateName !== undefined) updated.templateName = next.templateName;
+      if (next.category !== undefined) updated.category = next.category;
+      if (next.uom !== undefined) updated.uom = next.uom;
+      return updated;
+    })
+  );
+}
+
+function updateSelectedLine(next: Partial<LineItem>) {
   if (!selectedId) return;
   setItems((prev) =>
     prev.map((it) => {
       if (it.id !== selectedId) return it;
       if (it.kind !== "line") return it;
-      const updated = { ...it, ...next } as TakeoffItem;
+      const updated = { ...it, ...next } as LineItem;
       if (updated.pts && updated.pts.length > 1) {
         updated.a = updated.pts[0];
         updated.b = updated.pts[updated.pts.length - 1];
@@ -3198,15 +3668,18 @@ useEffect(() => {
       .filter((it) => it.kind === "count")
       .reduce((acc, it) => acc + (it.kind === "count" ? it.value ?? 1 : 0), 0);
 
-    const linearLabel = calibration
-      ? formatLength(linearPx * calibration.metersPerDocPx, calibration.displayUnit)
+    const linearLabel = effectiveCalibration
+      ? formatLength(linearPx * effectiveCalibration.metersPerDocPx, effectiveCalibration.displayUnit)
       : `${linearPx.toFixed(1)} px`;
-    const areaLabel = calibration
-      ? formatArea(areaPx2 * calibration.metersPerDocPx * calibration.metersPerDocPx, calibration.displayUnit)
+    const areaLabel = effectiveCalibration
+      ? formatArea(
+          areaPx2 * effectiveCalibration.metersPerDocPx * effectiveCalibration.metersPerDocPx,
+          effectiveCalibration.displayUnit
+        )
       : `${areaPx2.toFixed(1)} px2`;
 
     return { linearLabel, areaLabel, count };
-  }, [pageItems, calibration]);
+  }, [pageItems, effectiveCalibration]);
 
   const pageKindCountsByPage = useMemo(() => {
     const m = new Map<number, { line: number; area: number; count: number }>();
@@ -3257,15 +3730,13 @@ useEffect(() => {
         existing.qty += polygonArea(it.pts);
       } else if (it.kind === "line") {
         existing.qty += lineLengthPx(it);
-      } else {
-        existing.qty += dist(it.a, it.b);
       }
 
       pageMap.set(key, existing);
     }
 
     for (const [page, pageMap] of perPageMaps.entries()) {
-      const pageCal = calibrationByPage.get(page) ?? null;
+      const pageCal = calibrationByPage.get(page) ?? docCalibration ?? null;
       const rows = Array.from(pageMap.values())
         .map((row, idx) => {
           if (row.kind === "count") {
@@ -3314,7 +3785,7 @@ useEffect(() => {
     }
 
     return byPage;
-  }, [items, calibrationByPage]);
+  }, [items, calibrationByPage, docCalibration]);
 
   // Reset drafts when page changes
   useEffect(() => {
@@ -3387,10 +3858,16 @@ useEffect(() => {
             <span>•</span>
             <span>{project?.client_name || "No client set"}</span>
 
-            {calibration?.label ? (
+            {effectiveCalibration?.label ? (
               <>
                 <span>•</span>
-                <Badge variant="outline">{calibration.label}</Badge>
+                <Badge variant="outline">{effectiveCalibration.label}</Badge>
+              </>
+            ) : null}
+            {calibrationSource === "document" ? (
+              <>
+                <span>ƒ?›</span>
+                <Badge variant="outline">Document default</Badge>
               </>
             ) : null}
           </div>
@@ -3428,7 +3905,7 @@ function activateTemplate(t: TakeoffTemplate) {
   resetDrafts();
   setTool(t.kind as Tool);
 
-  if (t.kind === "measure" && !calibration) {
+  if (t.kind === "measure" && !effectiveCalibration) {
     toast({
       title: "Measure needs scale",
       description: "Calibrate scale first (Properties → Calibrate).",
@@ -3551,6 +4028,83 @@ const toolButtons = (
     toast({ title: "Cleared", description: `Cleared items on page ${pageNumber}.` });
   }
 
+  function exportTakeoffCsv() {
+    if (!items.length) {
+      toast({ title: "Nothing to export", description: "No takeoff items yet." });
+      return;
+    }
+
+    const rows = items
+      .filter((it) => it.kind !== "measure" && !it.isMarkup)
+      .map((it) => {
+        const pageCal = calibrationByPage.get(it.page) ?? docCalibration ?? null;
+        let qty = 0;
+        let uom = it.uom ?? "";
+
+        if (it.kind === "count") {
+          qty = it.value ?? 1;
+          if (!uom) uom = "ea";
+        } else if (it.kind === "area") {
+          const px2 = polygonArea(it.pts);
+          if (pageCal) {
+            qty = px2 * pageCal.metersPerDocPx * pageCal.metersPerDocPx;
+            if (!uom) uom = squaredUnitLabel(pageCal.displayUnit);
+          } else {
+            qty = px2;
+            if (!uom) uom = "px2";
+          }
+        } else if (it.kind === "line") {
+          const px = lineLengthPx(it);
+          if (pageCal) {
+            qty = px * pageCal.metersPerDocPx;
+            if (!uom) uom = pageCal.displayUnit;
+          } else {
+            qty = px;
+            if (!uom) uom = "px";
+          }
+        }
+
+        return {
+          page: it.page,
+          kind: it.kind,
+          name: it.templateName ?? itemDisplayName(it),
+          qty: Number(qty.toFixed(3)),
+          uom,
+          category: it.category ?? "",
+        };
+      });
+
+    const csvEscape = (val: string | number) => {
+      const s = String(val ?? "");
+      if (/[\",\\n]/.test(s)) return `\"${s.replace(/\"/g, '\"\"')}\"`;
+      return s;
+    };
+
+    const header = ["page", "kind", "name", "qty", "uom", "category"];
+    const lines = [header.join(",")].concat(
+      rows.map((r) =>
+        [
+          csvEscape(r.page),
+          csvEscape(r.kind),
+          csvEscape(r.name),
+          csvEscape(r.qty),
+          csvEscape(r.uom),
+          csvEscape(r.category),
+        ].join(",")
+      )
+    );
+
+    const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `takeoff_${activeDoc?.file_name ?? "export"}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  }
+
 
   function TakeoffLegend() {
     if (!legendState.open) return null;
@@ -3574,9 +4128,9 @@ const toolButtons = (
           }
           if (t.kind === "area") {
             const aPx2 = its.reduce((acc, it) => acc + (it.kind === "area" ? polygonArea(it.pts) : 0), 0);
-            if (!calibration) return `${aPx2.toFixed(1)} px²`;
-            const m2 = aPx2 * (calibration.metersPerDocPx * calibration.metersPerDocPx);
-            return formatArea(m2, calibration.displayUnit);
+            if (!effectiveCalibration) return `${aPx2.toFixed(1)} px²`;
+            const m2 = aPx2 * (effectiveCalibration.metersPerDocPx * effectiveCalibration.metersPerDocPx);
+            return formatArea(m2, effectiveCalibration.displayUnit);
           }
           // measure/line
           const lenPx = its.reduce((acc, it) => {
@@ -3584,9 +4138,9 @@ const toolButtons = (
             if (it.kind === "line") return acc + lineLengthPx(it);
             return acc;
           }, 0);
-          if (!calibration) return `${lenPx.toFixed(1)} px`;
-          const m = lenPx * calibration.metersPerDocPx;
-          return formatLength(m, calibration.displayUnit);
+          if (!effectiveCalibration) return `${lenPx.toFixed(1)} px`;
+          const m = lenPx * effectiveCalibration.metersPerDocPx;
+          return formatLength(m, effectiveCalibration.displayUnit);
         })();
 
         return {
@@ -3880,20 +4434,21 @@ const draftFill = hslA(draftToken, 0.18);
           {snapIndicator ? (() => {
             const x = snapIndicator.x * z;
             const y = snapIndicator.y * z;
-            const size = 10;
+            const size = 14;
             return (
               <g>
+                <circle cx={x} cy={y} r={size} fill="none" stroke="#38bdf8" strokeWidth={1.5} opacity={0.9} />
                 <rect
                   x={x - size / 2}
                   y={y - size / 2}
                   width={size}
                   height={size}
                   fill="white"
-                  stroke="#111827"
+                  stroke="#0ea5e9"
                   strokeWidth={1.5}
                 />
-                <line x1={x - 4} y1={y - 4} x2={x + 4} y2={y + 4} stroke="#111827" strokeWidth={1.5} />
-                <line x1={x + 4} y1={y - 4} x2={x - 4} y2={y + 4} stroke="#111827" strokeWidth={1.5} />
+                <line x1={x - 5} y1={y - 5} x2={x + 5} y2={y + 5} stroke="#0ea5e9" strokeWidth={1.8} />
+                <line x1={x + 5} y1={y - 5} x2={x - 5} y2={y + 5} stroke="#0ea5e9" strokeWidth={1.8} />
               </g>
             );
           })() : null}
@@ -4021,9 +4576,9 @@ const draftFill = hslA(draftToken, 0.18);
             const pxLen = dist(it.a, it.b);
             const label = (() => {
               if (it.kind !== "measure") return null;
-              if (!calibration) return `${Math.round(pxLen)} px`;
-              const meters = pxLen * calibration.metersPerDocPx;
-              return formatLength(meters, calibration.displayUnit);
+              if (!effectiveCalibration) return `${Math.round(pxLen)} px`;
+              const meters = pxLen * effectiveCalibration.metersPerDocPx;
+              return formatLength(meters, effectiveCalibration.displayUnit);
             })();
 
             const lineWidth = it.kind === "line" ? 3 : 2;
@@ -4066,8 +4621,8 @@ const draftFill = hslA(draftToken, 0.18);
                 const my = (y1 + y2) / 2;
                 const pxLen = dist(draft.a, draft.b);
 
-                const label = calibration
-                  ? formatLength(pxLen * calibration.metersPerDocPx, calibration.displayUnit)
+                const label = effectiveCalibration
+                  ? formatLength(pxLen * effectiveCalibration.metersPerDocPx, effectiveCalibration.displayUnit)
                   : `${Math.round(pxLen)} px`;
 
                 return (
@@ -4154,8 +4709,8 @@ const draftFill = hslA(draftToken, 0.18);
               if (calibrateOpen && calibrateValueStr && calibrateUnit) {
                 return `${calibrateValueStr} ${calibrateUnit}`;
               }
-              if (calibration) {
-                return formatLength(pxLen * calibration.metersPerDocPx, calibration.displayUnit);
+              if (effectiveCalibration) {
+                return formatLength(pxLen * effectiveCalibration.metersPerDocPx, effectiveCalibration.displayUnit);
               }
               return `${Math.round(pxLen)} px`;
             })();
@@ -4205,21 +4760,107 @@ const draftFill = hslA(draftToken, 0.18);
         </div>
 
         {/* Draft quantity */}
-        {(draft && calibration && draftLengthMeters != null) ||
-        (areaDraft && calibration && areaDraftMeters2 != null) ||
-        (lineDraft && calibration && lineDraftMeters != null) ? (
+        {(draft && effectiveCalibration && draftLengthMeters != null) ||
+        (areaDraft && effectiveCalibration && areaDraftMeters2 != null) ||
+        (lineDraft && effectiveCalibration && lineDraftMeters != null) ? (
           <div className="absolute bottom-2 left-2 rounded-md border bg-white/90 px-2 py-1 text-xs">
-            {draft && calibration && draftLengthMeters != null
-              ? `Length: ${formatLength(draftLengthMeters, calibration.displayUnit)}`
+            {draft && effectiveCalibration && draftLengthMeters != null
+              ? `Length: ${formatLength(draftLengthMeters, effectiveCalibration.displayUnit)}`
               : null}
-            {areaDraft && calibration && areaDraftMeters2 != null
-              ? `Area: ${formatArea(areaDraftMeters2, calibration.displayUnit)}`
+            {areaDraft && effectiveCalibration && areaDraftMeters2 != null
+              ? `Area: ${formatArea(areaDraftMeters2, effectiveCalibration.displayUnit)}`
               : null}
-            {lineDraft && calibration && lineDraftMeters != null
-              ? `Length: ${formatLength(lineDraftMeters, calibration.displayUnit)}`
+            {lineDraft && effectiveCalibration && lineDraftMeters != null
+              ? `Length: ${formatLength(lineDraftMeters, effectiveCalibration.displayUnit)}`
               : null}
           </div>
         ) : null}
+
+        {(tool === "line" || tool === "area" || tool === "measure" || tool === "scale") && orthoEnabled && !shiftDown ? (
+          <div className="absolute bottom-2 right-2 rounded-md border bg-white/90 px-2 py-1 text-[10px] text-slate-600">
+            Ortho
+          </div>
+        ) : null}
+
+        {/* Collaboration cursors */}
+        {Object.entries(remoteCursors)
+          .filter(([, c]) => c.page === pageNumber && Date.now() - c.ts < 5000)
+          .map(([userId, c]) => {
+            const user = collabUsers[userId];
+            if (!user) return null;
+            const x = c.x * uiZoom;
+            const y = c.y * uiZoom;
+            return (
+              <div
+                key={`cursor-${userId}`}
+                className="pointer-events-none absolute -translate-x-1/2 -translate-y-1/2"
+                style={{ left: x, top: y }}
+              >
+                <div
+                  className="h-2 w-2 rounded-full border border-white"
+                  style={{ backgroundColor: user.color }}
+                />
+                <div
+                  className="mt-1 rounded px-1.5 py-0.5 text-[10px] text-white"
+                  style={{ backgroundColor: user.color }}
+                >
+                  {user.name}
+                </div>
+              </div>
+            );
+          })}
+
+        {/* Collaboration selection outline */}
+        {Object.entries(remoteSelections)
+          .filter(([, sel]) => sel.page === pageNumber && Date.now() - sel.ts < 8000)
+          .map(([userId, sel]) => {
+            const user = collabUsers[userId];
+            if (!user || !sel.id) return null;
+            const item = pageItems.find((it) => it.id === sel.id);
+            if (!item) return null;
+            const stroke = user.color;
+            if (item.kind === "count") {
+              const x = item.p.x * uiZoom;
+              const y = item.p.y * uiZoom;
+              return (
+                <div
+                  key={`sel-${userId}`}
+                  className="pointer-events-none absolute -translate-x-1/2 -translate-y-1/2 rounded-full border-2"
+                  style={{ left: x, top: y, borderColor: stroke, width: 20, height: 20 }}
+                />
+              );
+            }
+            if (item.kind === "area") {
+              const pts = item.pts;
+              const xs = pts.map((p) => p.x);
+              const ys = pts.map((p) => p.y);
+              const minX = Math.min(...xs) * uiZoom;
+              const minY = Math.min(...ys) * uiZoom;
+              const maxX = Math.max(...xs) * uiZoom;
+              const maxY = Math.max(...ys) * uiZoom;
+              return (
+                <div
+                  key={`sel-${userId}`}
+                  className="pointer-events-none absolute border-2"
+                  style={{ left: minX, top: minY, width: maxX - minX, height: maxY - minY, borderColor: stroke }}
+                />
+              );
+            }
+            const pts = item.kind === "line" && item.pts?.length ? item.pts : [item.a, item.b];
+            const xs = pts.map((p) => p.x);
+            const ys = pts.map((p) => p.y);
+            const minX = Math.min(...xs) * uiZoom;
+            const minY = Math.min(...ys) * uiZoom;
+            const maxX = Math.max(...xs) * uiZoom;
+            const maxY = Math.max(...ys) * uiZoom;
+            return (
+              <div
+                key={`sel-${userId}`}
+                className="pointer-events-none absolute border-2"
+                style={{ left: minX, top: minY, width: maxX - minX, height: maxY - minY, borderColor: stroke }}
+              />
+            );
+          })}
       </div>
     );
   }
@@ -4266,7 +4907,14 @@ const draftFill = hslA(draftToken, 0.18);
 
         setSignedUrl(data.signedUrl);
 
-        const pdf = await getDocument({ url: data.signedUrl }).promise;
+        const loadingTask = getDocument({
+          url: data.signedUrl,
+          disableAutoFetch: false,
+          disableStream: false,
+          disableRange: false,
+          rangeChunkSize: 65536,
+        });
+        const pdf = await loadingTask.promise;
         if (cancelled) return;
 
 	    setPdfDoc(pdf);
@@ -4345,6 +4993,15 @@ const draftFill = hslA(draftToken, 0.18);
                   placeholder="e.g. 1:100"
                 />
               </div>
+
+              <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                <input
+                  type="checkbox"
+                  checked={calibrateAsDocDefault}
+                  onChange={(e) => setCalibrateAsDocDefault(e.target.checked)}
+                />
+                Save as document default
+              </label>
 
               <div className="text-xs text-muted-foreground">
                 {calibratePx ? `Measured line: ${Math.round(calibratePx)} px` : null}
@@ -4801,12 +5458,12 @@ const draftFill = hslA(draftToken, 0.18);
                   Ortho{shiftDown ? " (Shift)" : ""}
                 </Button>
                 <div className="ml-auto text-[10px] text-muted-foreground">
-                  {calibration ? (
+                  {effectiveCalibration ? (
                     <span>
                       Scale:{" "}
-                      {calibration.label
-                        ? calibration.label
-                        : `1 px = ${formatLength(calibration.metersPerDocPx, calibration.displayUnit)}`}
+                      {effectiveCalibration.label
+                        ? effectiveCalibration.label
+                        : `1 px = ${formatLength(effectiveCalibration.metersPerDocPx, effectiveCalibration.displayUnit)}`}
                     </span>
                   ) : (
                     <span>Scale: not calibrated</span>
@@ -4830,17 +5487,23 @@ const draftFill = hslA(draftToken, 0.18);
 	                <div className="rounded-lg border p-3">
 	                  <div className="text-xs font-semibold text-muted-foreground">Drawing Scale • Page {pageNumber}</div>
 	                  <div className="mt-1 text-sm">
-	                    {calibration
-	                      ? calibration.label
-	                        ? calibration.label
-	                        : `Calibrated (${calibration.displayUnit})`
+	                    {effectiveCalibration
+	                      ? effectiveCalibration.label
+	                        ? effectiveCalibration.label
+	                        : `Calibrated (${effectiveCalibration.displayUnit})`
 	                      : "Not calibrated"}
 	                  </div>
 	                  <div className="mt-2 text-xs text-muted-foreground">
-	                    {calibration
-	                      ? `1 px = ${formatLength(calibration.metersPerDocPx, calibration.displayUnit)}`
+	                    {effectiveCalibration
+	                      ? `1 px = ${formatLength(
+                          effectiveCalibration.metersPerDocPx,
+                          effectiveCalibration.displayUnit
+                        )}`
 	                      : "Calibrate by picking two points of a known real distance on this page."}
 	                  </div>
+                    {calibrationSource === "document" ? (
+                      <div className="mt-2 text-xs text-muted-foreground">Using document default scale.</div>
+                    ) : null}
 
 	                  <div className="mt-3 flex flex-wrap gap-2">
 	                    <Button size="sm" onClick={() => setToolWithTemplate("scale")}>
@@ -4853,16 +5516,33 @@ const draftFill = hslA(draftToken, 0.18);
 	                        persistCalibration(null);
 	                        toast({ title: "Scale cleared", description: `Page ${pageNumber}` });
 	                      }}
-	                      disabled={!calibration}
+	                      disabled={!effectiveCalibration}
 	                    >
 	                      Clear
 	                    </Button>
 	                  </div>
 	                </div>
 
-	                {/* Selected */}
-	                <div className="rounded-lg border p-3">
-	                  <div className="text-xs font-semibold text-muted-foreground">Selected</div>
+                {/* Selected */}
+                <div className="rounded-lg border p-3">
+                  <div className="flex items-center justify-between text-xs font-semibold text-muted-foreground">
+                    <span>Selected</span>
+                    <span className="text-[10px]">
+                      Online: {Object.keys(collabUsers).length || 1}
+                    </span>
+                  </div>
+                  {Object.values(collabUsers).length ? (
+                    <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                      {Object.values(collabUsers).map((u) => (
+                        <span
+                          key={u.id}
+                          className="inline-flex h-2.5 w-2.5 rounded-full border border-white"
+                          style={{ backgroundColor: u.color }}
+                          title={u.name}
+                        />
+                      ))}
+                    </div>
+                  ) : null}
 	                  {selectedItem ? (
 	                    <div className="mt-2 space-y-2">
 	                      <div className="flex items-center gap-2">
@@ -4887,35 +5567,59 @@ const draftFill = hslA(draftToken, 0.18);
 	                          }
 	                          if (selectedItem.kind === "area") {
 	                            const areaPx2 = polygonArea(selectedItem.pts);
-	                            if (!calibration) return `${areaPx2.toFixed(1)} px²`;
-	                            const m2 = areaPx2 * (calibration.metersPerDocPx * calibration.metersPerDocPx);
-	                            return formatArea(m2, calibration.displayUnit);
+	                            if (!effectiveCalibration) return `${areaPx2.toFixed(1)} px²`;
+	                            const m2 = areaPx2 * (effectiveCalibration.metersPerDocPx * effectiveCalibration.metersPerDocPx);
+	                            return formatArea(m2, effectiveCalibration.displayUnit);
 	                          }
 	                          const lenPx = selectedItem.kind === "line" ? lineLengthPx(selectedItem) : dist(selectedItem.a, selectedItem.b);
-	                          if (!calibration) return `${lenPx.toFixed(1)} px`;
-	                          const m = lenPx * calibration.metersPerDocPx;
-	                          return formatLength(m, calibration.displayUnit);
+	                          if (!effectiveCalibration) return `${lenPx.toFixed(1)} px`;
+	                          const m = lenPx * effectiveCalibration.metersPerDocPx;
+	                          return formatLength(m, effectiveCalibration.displayUnit);
 	                        })()}
 	                      </div>
 
-	                      {selectedItem.kind === "line" ? (
-	                        <div className="space-y-3">
-	                          <div className="grid gap-2">
-	                            <div className="text-xs font-semibold text-muted-foreground">Polyline properties</div>
-	                            <Input
-	                              value={selectedItem.templateName ?? ""}
-	                              onChange={(e) => updateSelectedLine({ templateName: e.target.value })}
-	                              placeholder="Name"
-	                            />
-	                            <Input
-	                              value={selectedItem.category ?? ""}
-	                              onChange={(e) => updateSelectedLine({ category: e.target.value })}
-	                              placeholder="Category"
-	                            />
-	                          </div>
+                      <div className="grid gap-2">
+                        <div className="text-xs font-semibold text-muted-foreground">Properties</div>
+                        <Input
+                          value={
+                            selectedItem.templateName ??
+                            (selectedItem.kind === "count" ? selectedItem.label ?? "" : "")
+                          }
+                          onChange={(e) => {
+                            const value = e.target.value;
+                            updateSelectedMeta({
+                              templateName: value,
+                              ...(selectedItem.kind === "count" ? { label: value } : {}),
+                            });
+                          }}
+                          placeholder="Name"
+                        />
+                        <Input
+                          value={selectedItem.category ?? ""}
+                          onChange={(e) => updateSelectedMeta({ category: e.target.value })}
+                          placeholder="Category"
+                        />
+                        <Input
+                          value={selectedItem.uom ?? ""}
+                          onChange={(e) => updateSelectedMeta({ uom: e.target.value })}
+                          placeholder="Unit (uom)"
+                        />
+                        {selectedItem.kind === "count" ? (
+                          <Input
+                            type="number"
+                            value={selectedItem.value ?? 1}
+                            onChange={(e) => updateSelectedMeta({ value: Number(e.target.value) })}
+                            placeholder="Count"
+                          />
+                        ) : null}
+                      </div>
 
-	                          <div className="space-y-2">
-	                            <div className="text-xs font-semibold text-muted-foreground">Color</div>
+                      {selectedItem.kind === "line" ? (
+                        <div className="space-y-3">
+                          <div className="text-xs font-semibold text-muted-foreground">Polyline properties</div>
+
+                          <div className="space-y-2">
+                            <div className="text-xs font-semibold text-muted-foreground">Color</div>
 	                            <div className="flex flex-wrap gap-2">
 	                              {MARKUP_COLOR_TOKENS.map((t) => {
 	                                const active = t === selectedItem.style.token;
@@ -5012,6 +5716,9 @@ const draftFill = hslA(draftToken, 0.18);
 	                    <Button size="sm" variant="outline" onClick={redo} disabled={redoCount === 0}>
 	                      Redo
 	                    </Button>
+	                    <Button size="sm" variant="outline" onClick={exportTakeoffCsv}>
+	                      Export CSV
+	                    </Button>
 	                  </div>
 	                </div>
 
@@ -5039,18 +5746,18 @@ const draftFill = hslA(draftToken, 0.18);
 	                          }
 	                          if (t.kind === "area") {
 	                            const aPx2 = its.reduce((acc, it) => acc + (it.kind === "area" ? polygonArea(it.pts) : 0), 0);
-	                            if (!calibration) return `${aPx2.toFixed(1)} px²`;
-	                            const m2 = aPx2 * (calibration.metersPerDocPx * calibration.metersPerDocPx);
-	                            return formatArea(m2, calibration.displayUnit);
+	                            if (!effectiveCalibration) return `${aPx2.toFixed(1)} px²`;
+	                            const m2 = aPx2 * (effectiveCalibration.metersPerDocPx * effectiveCalibration.metersPerDocPx);
+	                            return formatArea(m2, effectiveCalibration.displayUnit);
 	                          }
                           const lenPx = its.reduce((acc, it) => {
                             if (it.kind === "measure") return acc + dist(it.a, it.b);
                             if (it.kind === "line") return acc + lineLengthPx(it);
                             return acc;
                           }, 0);
-	                          if (!calibration) return `${lenPx.toFixed(1)} px`;
-	                          const m = lenPx * calibration.metersPerDocPx;
-	                          return formatLength(m, calibration.displayUnit);
+	                          if (!effectiveCalibration) return `${lenPx.toFixed(1)} px`;
+	                          const m = lenPx * effectiveCalibration.metersPerDocPx;
+	                          return formatLength(m, effectiveCalibration.displayUnit);
 	                        })();
 
 	                        return (
@@ -5070,7 +5777,7 @@ const draftFill = hslA(draftToken, 0.18);
 	                      })}
 	                    </div>
 
-	                    {calibration ? (
+	                    {effectiveCalibration ? (
 	                      <div className="mt-3 text-xs text-muted-foreground">
 	                        Tip: Use <span className="font-medium">Measure</span> after calibration to show real lengths.
 	                      </div>

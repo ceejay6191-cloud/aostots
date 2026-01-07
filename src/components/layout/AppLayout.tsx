@@ -1,9 +1,10 @@
 import { ReactNode } from "react";
 import { Link, useLocation } from "react-router-dom";
-import { LayoutDashboard, FolderKanban, Boxes, LogOut } from "lucide-react";
+import { LayoutDashboard, FolderKanban, Boxes, LogOut, Users, Shield } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { supabase } from "@/integrations/supabase/client";
+import { useAdminAccess } from "@/hooks/useAdminAccess";
 
 type AppLayoutProps = {
   children: ReactNode;
@@ -55,6 +56,8 @@ export function AppLayout({
   className = "",
   mainClassName = "",
 }: AppLayoutProps) {
+  const { canAccess, loading: adminLoading } = useAdminAccess();
+
   async function handleLogout() {
     await supabase.auth.signOut();
     window.location.href = "/auth";
@@ -76,6 +79,10 @@ export function AppLayout({
               <NavLink to="/dashboard" label="Dashboard" icon={<LayoutDashboard className="h-4 w-4" />} />
               <NavLink to="/projects" label="Projects" icon={<FolderKanban className="h-4 w-4" />} />
               <NavLink to="/assemblies" label="Assemblies" icon={<Boxes className="h-4 w-4" />} />
+              <NavLink to="/companies" label="Teams" icon={<Users className="h-4 w-4" />} />
+              {!adminLoading && canAccess ? (
+                <NavLink to="/admin/dashboard" label="Admin" icon={<Shield className="h-4 w-4" />} />
+              ) : null}
             </nav>
           </div>
 

@@ -18,6 +18,7 @@ import { TakeoffWorkspaceContent } from "@/pages/TakeoffWorkspace";
 import { EstimatingWorkspaceContent } from "@/pages/EstimatingWorkspace";
 import { ProposalWorkspaceContent } from "@/pages/ProposalWorkspace";
 import { ScanWorkspaceContent } from "@/pages/ScanWorkspace";
+import { useProjectPresence } from "@/hooks/useProjectPresence";
 
 import {
   Building2,
@@ -216,6 +217,7 @@ export default function ProjectDetails() {
   const { projectId } = useParams();
   const navigate = useNavigate();
   const qc = useQueryClient();
+  useProjectPresence(projectId);
 
   const [activeTab, setActiveTab] = useState<TabKey>("overview");
 

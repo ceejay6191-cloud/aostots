@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   DndContext,
@@ -22,6 +22,7 @@ import { Input } from "@/components/ui/input";
 import { toast } from "@/components/ui/use-toast";
 
 import { supabase } from "@/integrations/supabase/client";
+import { useAuth } from "@/hooks/useAuth";
 import { ChevronDown, ChevronRight, Plus, Trash2, MoreVertical } from "lucide-react";
 
 // Supabase types in this repo are generated only for "projects".
@@ -61,6 +62,9 @@ type TakeoffLine = {
   qty: number;
   kind: string;
   category: string | null;
+  itemIds: string[];
+  templateId?: string | null;
+  templateName?: string;
   uncalibrated?: boolean;
 };
 
@@ -92,6 +96,14 @@ function money(n: number) {
 function clampPct(v: number) {
   if (!isFinite(v)) return 0;
   return Math.max(0, Math.min(100, Math.round(v)));
+}
+
+function colorForUser(id: string) {
+  let hash = 0;
+  for (let i = 0; i < id.length; i += 1) {
+    hash = (hash * 31 + id.charCodeAt(i)) % 360;
+  }
+  return `hsl(${hash} 70% 50%)`;
 }
 
 const DEFAULT_CATEGORY_NAME = "Uncategorized";
@@ -257,10 +269,12 @@ type DragHandleProps = {
 function SortableRow({
   id,
   className,
+  onClick,
   children,
 }: {
   id: EstimateRowKey;
   className?: string;
+  onClick?: () => void;
   children: (handle: DragHandleProps) => ReactNode;
 }) {
   const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition, isDragging } = useSortable({
@@ -274,7 +288,14 @@ function SortableRow({
   };
 
   return (
-    <tr ref={setNodeRef} style={style} className={className} {...attributes} {...listeners}>
+    <tr
+      ref={setNodeRef}
+      style={style}
+      className={className}
+      onClick={onClick}
+      {...attributes}
+      {...listeners}
+    >
       {children({ attributes, listeners, setActivatorNodeRef })}
     </tr>
   );
@@ -292,7 +313,18 @@ export function EstimatingWorkspaceContent({
   targetLines?: number; // used for estimating_pct calculation
 }) {
   const qc = useQueryClient();
+  const { user } = useAuth();
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
+
+  const [collabUsers, setCollabUsers] = useState<Record<string, { id: string; name: string; color: string }>>({});
+  const [remoteCursors, setRemoteCursors] = useState<Record<string, { x: number; y: number; ts: number }>>({});
+  const [remoteSelections, setRemoteSelections] = useState<
+    Record<string, { rowKey: EstimateRowKey | null; ts: number }>
+  >({});
+  const collabChannelRef = useRef<any>(null);
+  const cursorFrameRef = useRef<number | null>(null);
+  const pendingCursorRef = useRef<{ x: number; y: number } | null>(null);
+  const tableContainerRef = useRef<HTMLDivElement | null>(null);
 
   const [lines, setLines] = useState<EstLine[]>(() => readLines(projectId));
   const [selectedIds, setSelectedIds] = useState<Record<string, boolean>>({});
@@ -301,6 +333,7 @@ export function EstimatingWorkspaceContent({
   const [takeoffOverrides, setTakeoffOverrides] = useState<Record<string, TakeoffOverride>>(() =>
     readTakeoffOverrides(projectId)
   );
+  const [takeoffItemMetaById, setTakeoffItemMetaById] = useState<Record<string, any>>({});
   const [categories, setCategories] = useState<EstimateCategory[]>(() => readCategories(projectId));
   const [rowOrder, setRowOrder] = useState<EstimateRowKey[]>(() => readRowOrder(projectId));
   const [collapsedCategories, setCollapsedCategories] = useState<Record<string, boolean>>(() =>
@@ -351,72 +384,110 @@ export function EstimatingWorkspaceContent({
     writeCollapsedCategories(projectId, collapsedCategories);
   }, [projectId, collapsedCategories]);
 
-  useEffect(() => {
+  const loadTakeoffData = useCallback(async () => {
     if (!projectId) return;
-    let cancelled = false;
     setTakeoffLoading(true);
 
-    (async () => {
-      try {
-        const { data: items, error } = await db
-          .from("takeoff_items")
-          .select("id,document_id,page_number,kind,meta")
-          .eq("project_id", projectId);
+    try {
+      const { data: items, error } = await db
+        .from("takeoff_items")
+        .select("id,document_id,page_number,kind,meta")
+        .eq("project_id", projectId);
 
-        if (error) throw error;
+      if (error) throw error;
 
-        const filtered = ((items ?? []) as TakeoffItemRow[]).filter((it) => it.kind !== "measure");
-        const ids = filtered.map((it) => it.id);
+      const filtered = ((items ?? []) as TakeoffItemRow[]).filter((it) => it.kind !== "measure");
+      const metaById: Record<string, any> = {};
+      for (const it of filtered) metaById[it.id] = it.meta ?? {};
+      const ids = filtered.map((it) => it.id);
 
-        let geomRows: TakeoffGeometryRow[] = [];
-        if (ids.length) {
-          const { data: geoms, error: geomError } = await db
-            .from("takeoff_geometries")
-            .select("takeoff_item_id,points")
-            .in("takeoff_item_id", ids);
-          if (geomError) throw geomError;
-          geomRows = (geoms ?? []) as TakeoffGeometryRow[];
+      let geomRows: TakeoffGeometryRow[] = [];
+      if (ids.length) {
+        const { data: geoms, error: geomError } = await db
+          .from("takeoff_geometries")
+          .select("takeoff_item_id,points")
+          .in("takeoff_item_id", ids);
+        if (geomError) throw geomError;
+        geomRows = (geoms ?? []) as TakeoffGeometryRow[];
+      }
+
+      const { data: calibrations, error: calError } = await db
+        .from("takeoff_calibrations")
+        .select("document_id,page_number,meters_per_doc_px")
+        .eq("project_id", projectId);
+
+      if (calError) throw calError;
+
+      const geomMap = new Map<string, Point[]>();
+      for (const g of geomRows) geomMap.set(g.takeoff_item_id, g.points || []);
+
+      const calMap = new Map<string, number>();
+      for (const c of calibrations ?? []) {
+        const key = `${c.document_id}:${c.page_number}`;
+        calMap.set(key, Number(c.meters_per_doc_px));
+      }
+
+      let linearM = 0;
+      let areaM2 = 0;
+      let count = 0;
+      let linearMissing = 0;
+      let areaMissing = 0;
+
+      const takeoffGroup = new Map<string, TakeoffLine>();
+
+      for (const it of filtered) {
+        if (it.meta?.isMarkup) continue;
+        if (it.kind === "count") {
+          const val = Number(it.meta?.value ?? 1);
+          count += isFinite(val) ? val : 1;
+          const qty = isFinite(val) ? val : 1;
+          const unit = it.meta?.uom ?? "ea";
+          const name = it.meta?.templateName ?? it.meta?.label ?? "Count";
+          const category = it.meta?.category ?? null;
+          const key = `${it.meta?.templateId ?? name}:${unit}:${it.kind}:${category ?? ""}`;
+          const existing = takeoffGroup.get(key);
+          if (existing) {
+            existing.qty += qty;
+            existing.itemIds.push(it.id);
+          } else {
+            takeoffGroup.set(key, {
+              key,
+              description: category ? `${name} (${category})` : name,
+              unit,
+              qty,
+              kind: it.kind,
+              category,
+              itemIds: [it.id],
+              templateId: it.meta?.templateId ?? null,
+              templateName: name,
+            });
+          }
+          continue;
         }
 
-        const { data: calibrations, error: calError } = await db
-          .from("takeoff_calibrations")
-          .select("document_id,page_number,meters_per_doc_px")
-          .eq("project_id", projectId);
+        const pts = geomMap.get(it.id) ?? [];
+        if (!pts.length) continue;
 
-        if (calError) throw calError;
+        const calKey = `${it.document_id}:${it.page_number}`;
+        const mpp = calMap.get(calKey);
 
-        if (cancelled) return;
-
-        const geomMap = new Map<string, Point[]>();
-        for (const g of geomRows) geomMap.set(g.takeoff_item_id, g.points || []);
-
-        const calMap = new Map<string, number>();
-        for (const c of calibrations ?? []) {
-          const key = `${c.document_id}:${c.page_number}`;
-          calMap.set(key, Number(c.meters_per_doc_px));
-        }
-
-        let linearM = 0;
-        let areaM2 = 0;
-        let count = 0;
-        let linearMissing = 0;
-        let areaMissing = 0;
-
-        const takeoffGroup = new Map<string, TakeoffLine>();
-
-        for (const it of filtered) {
-          if (it.meta?.isMarkup) continue;
-          if (it.kind === "count") {
-            const val = Number(it.meta?.value ?? 1);
-            count += isFinite(val) ? val : 1;
-            const qty = isFinite(val) ? val : 1;
-            const unit = it.meta?.uom ?? "ea";
-            const name = it.meta?.templateName ?? it.meta?.label ?? "Count";
-            const category = it.meta?.category ?? null;
-            const key = `${it.meta?.templateId ?? name}:${unit}:${it.kind}:${category ?? ""}`;
+        if (it.kind === "line") {
+          if (pts.length < 2) continue;
+          let px = 0;
+          for (let i = 0; i < pts.length - 1; i += 1) {
+            px += dist(pts[i], pts[i + 1]);
+          }
+          const unit = it.meta?.uom ?? "m";
+          const name = it.meta?.templateName ?? "Line";
+          const category = it.meta?.category ?? null;
+          const key = `${it.meta?.templateId ?? name}:${unit}:${it.kind}:${category ?? ""}`;
+          if (mpp) {
+            const qty = px * mpp;
+            linearM += qty;
             const existing = takeoffGroup.get(key);
             if (existing) {
               existing.qty += qty;
+              existing.itemIds.push(it.id);
             } else {
               takeoffGroup.set(key, {
                 key,
@@ -425,126 +496,199 @@ export function EstimatingWorkspaceContent({
                 qty,
                 kind: it.kind,
                 category,
+                itemIds: [it.id],
+                templateId: it.meta?.templateId ?? null,
+                templateName: name,
               });
             }
-            continue;
-          }
-
-          const pts = geomMap.get(it.id) ?? [];
-          if (!pts.length) continue;
-
-          const calKey = `${it.document_id}:${it.page_number}`;
-          const mpp = calMap.get(calKey);
-
-          if (it.kind === "line") {
-            if (pts.length < 2) continue;
-            let px = 0;
-            for (let i = 0; i < pts.length - 1; i += 1) {
-              px += dist(pts[i], pts[i + 1]);
-            }
-            const unit = it.meta?.uom ?? "m";
-            const name = it.meta?.templateName ?? "Line";
-            const category = it.meta?.category ?? null;
-            const key = `${it.meta?.templateId ?? name}:${unit}:${it.kind}:${category ?? ""}`;
-            if (mpp) {
-              const qty = px * mpp;
-              linearM += qty;
-              const existing = takeoffGroup.get(key);
-              if (existing) existing.qty += qty;
-              else {
-                takeoffGroup.set(key, {
-                  key,
-                  description: category ? `${name} (${category})` : name,
-                  unit,
-                  qty,
-                  kind: it.kind,
-                  category,
-                });
-              }
+          } else {
+            linearMissing += 1;
+            const existing = takeoffGroup.get(key);
+            if (existing) {
+              existing.uncalibrated = true;
+              existing.itemIds.push(it.id);
             } else {
-              linearMissing += 1;
-              const existing = takeoffGroup.get(key);
-              if (existing) existing.uncalibrated = true;
-              else {
-                takeoffGroup.set(key, {
-                  key,
-                  description: category ? `${name} (${category})` : name,
-                  unit,
-                  qty: 0,
-                  kind: it.kind,
-                  category,
-                  uncalibrated: true,
-                });
-              }
+              takeoffGroup.set(key, {
+                key,
+                description: category ? `${name} (${category})` : name,
+                unit,
+                qty: 0,
+                kind: it.kind,
+                category,
+                uncalibrated: true,
+                itemIds: [it.id],
+                templateId: it.meta?.templateId ?? null,
+                templateName: name,
+              });
             }
-            continue;
           }
+          continue;
+        }
 
-          if (it.kind === "area") {
-            const px2 = polygonArea(pts);
-            const unit = it.meta?.uom ?? "m2";
-            const name = it.meta?.templateName ?? "Area";
-            const category = it.meta?.category ?? null;
-            const key = `${it.meta?.templateId ?? name}:${unit}:${it.kind}:${category ?? ""}`;
-            if (mpp) {
-              const qty = px2 * mpp * mpp;
-              areaM2 += qty;
-              const existing = takeoffGroup.get(key);
-              if (existing) existing.qty += qty;
-              else {
-                takeoffGroup.set(key, {
-                  key,
-                  description: category ? `${name} (${category})` : name,
-                  unit,
-                  qty,
-                  kind: it.kind,
-                  category,
-                });
-              }
+        if (it.kind === "area") {
+          const px2 = polygonArea(pts);
+          const unit = it.meta?.uom ?? "m2";
+          const name = it.meta?.templateName ?? "Area";
+          const category = it.meta?.category ?? null;
+          const key = `${it.meta?.templateId ?? name}:${unit}:${it.kind}:${category ?? ""}`;
+          if (mpp) {
+            const qty = px2 * mpp * mpp;
+            areaM2 += qty;
+            const existing = takeoffGroup.get(key);
+            if (existing) {
+              existing.qty += qty;
+              existing.itemIds.push(it.id);
             } else {
-              areaMissing += 1;
-              const existing = takeoffGroup.get(key);
-              if (existing) existing.uncalibrated = true;
-              else {
-                takeoffGroup.set(key, {
-                  key,
-                  description: category ? `${name} (${category})` : name,
-                  unit,
-                  qty: 0,
-                  kind: it.kind,
-                  category,
-                  uncalibrated: true,
-                });
-              }
+              takeoffGroup.set(key, {
+                key,
+                description: category ? `${name} (${category})` : name,
+                unit,
+                qty,
+                kind: it.kind,
+                category,
+                itemIds: [it.id],
+                templateId: it.meta?.templateId ?? null,
+                templateName: name,
+              });
+            }
+          } else {
+            areaMissing += 1;
+            const existing = takeoffGroup.get(key);
+            if (existing) {
+              existing.uncalibrated = true;
+              existing.itemIds.push(it.id);
+            } else {
+              takeoffGroup.set(key, {
+                key,
+                description: category ? `${name} (${category})` : name,
+                unit,
+                qty: 0,
+                kind: it.kind,
+                category,
+                uncalibrated: true,
+                itemIds: [it.id],
+                templateId: it.meta?.templateId ?? null,
+                templateName: name,
+              });
             }
           }
         }
-
-        setTakeoffLines(Array.from(takeoffGroup.values()));
-
-        const linearLabel =
-          linearM > 0 ? formatMeters(linearM) : linearMissing ? `Uncalibrated (${linearMissing})` : "--";
-        const areaLabel =
-          areaM2 > 0 ? formatMeters2(areaM2) : areaMissing ? `Uncalibrated (${areaMissing})` : "--";
-        const note =
-          linearMissing || areaMissing
-            ? "Some takeoffs are missing calibration."
-            : null;
-
-        setTakeoffSummary({ linearLabel, areaLabel, count, note });
-      } catch (e: any) {
-        if (cancelled) return;
-        setTakeoffLines([]);
-        setTakeoffSummary({ linearLabel: "--", areaLabel: "--", count: 0, note: "Failed to load takeoffs." });
-      } finally {
-        if (!cancelled) setTakeoffLoading(false);
       }
-    })();
+
+      setTakeoffLines(Array.from(takeoffGroup.values()));
+      setTakeoffItemMetaById(metaById);
+
+      const linearLabel =
+        linearM > 0 ? formatMeters(linearM) : linearMissing ? `Uncalibrated (${linearMissing})` : "--";
+      const areaLabel =
+        areaM2 > 0 ? formatMeters2(areaM2) : areaMissing ? `Uncalibrated (${areaMissing})` : "--";
+      const note =
+        linearMissing || areaMissing
+          ? "Some takeoffs are missing calibration."
+          : null;
+
+      setTakeoffSummary({ linearLabel, areaLabel, count, note });
+    } catch (e: any) {
+      setTakeoffLines([]);
+      setTakeoffSummary({ linearLabel: "--", areaLabel: "--", count: 0, note: "Failed to load takeoffs." });
+    } finally {
+      setTakeoffLoading(false);
+    }
+  }, [projectId]);
+
+  useEffect(() => {
+    void loadTakeoffData();
+  }, [loadTakeoffData]);
+
+  useEffect(() => {
+    if (!projectId) return;
+    const channel = db
+      .channel(`takeoff-items-${projectId}`)
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "takeoff_items", filter: `project_id=eq.${projectId}` },
+        () => {
+          void loadTakeoffData();
+        }
+      )
+      .subscribe();
 
     return () => {
-      cancelled = true;
+      db.removeChannel(channel);
     };
-  }, [projectId]);
+  }, [projectId, loadTakeoffData]);
+
+  useEffect(() => {
+    if (typeof BroadcastChannel === "undefined") return;
+    const channel = new BroadcastChannel("aostot-takeoff-sync");
+    channel.onmessage = (event) => {
+      const data = event?.data;
+      if (!data || data.projectId !== projectId) return;
+      void loadTakeoffData();
+    };
+    return () => {
+      channel.close();
+    };
+  }, [projectId, loadTakeoffData]);
+
+  useEffect(() => {
+    if (!projectId || !user?.id) return;
+
+    const channel = db.channel(`estimating-collab-${projectId}`, {
+      config: { presence: { key: user.id } },
+    });
+
+    channel.on("presence", { event: "sync" }, () => {
+      const state = channel.presenceState?.() ?? {};
+      const next: Record<string, { id: string; name: string; color: string }> = {};
+      Object.values(state).forEach((entries: any) => {
+        const entry = Array.isArray(entries) ? entries[0] : entries;
+        if (!entry?.userId) return;
+        next[entry.userId] = {
+          id: entry.userId,
+          name: entry.name ?? "User",
+          color: entry.color ?? colorForUser(entry.userId),
+        };
+      });
+      setCollabUsers(next);
+    });
+
+    channel.on("broadcast", { event: "cursor" }, (payload: any) => {
+      const data = payload?.payload;
+      if (!data?.userId || data.userId === user.id) return;
+      setRemoteCursors((prev) => ({
+        ...prev,
+        [data.userId]: { x: data.x, y: data.y, ts: Date.now() },
+      }));
+    });
+
+    channel.on("broadcast", { event: "selection" }, (payload: any) => {
+      const data = payload?.payload;
+      if (!data?.userId || data.userId === user.id) return;
+      setRemoteSelections((prev) => ({
+        ...prev,
+        [data.userId]: { rowKey: data.rowKey ?? null, ts: Date.now() },
+      }));
+    });
+
+    channel.subscribe((status: string) => {
+      if (status !== "SUBSCRIBED") return;
+      channel.track({
+        userId: user.id,
+        name: user.email ?? "User",
+        color: colorForUser(user.id),
+      });
+    });
+
+    collabChannelRef.current = channel;
+    return () => {
+      setRemoteCursors({});
+      setRemoteSelections({});
+      setCollabUsers({});
+      collabChannelRef.current = null;
+      db.removeChannel(channel);
+    };
+  }, [projectId, user?.id]);
 
   useEffect(() => {
     const names = new Map<string, string>();
@@ -626,6 +770,14 @@ export function EstimatingWorkspaceContent({
     }
     return map;
   }, [categoryRows, manualRows, takeoffRows]);
+
+  const remoteSelectedRows = useMemo(() => {
+    const set = new Set<EstimateRowKey>();
+    for (const sel of Object.values(remoteSelections)) {
+      if (sel.rowKey && Date.now() - sel.ts < 8000) set.add(sel.rowKey);
+    }
+    return set;
+  }, [remoteSelections]);
 
   const collapsedSet = useMemo(() => {
     const set = new Set<string>();
@@ -851,6 +1003,47 @@ export function EstimatingWorkspaceContent({
     setSelectedIds({});
   }
 
+  async function renameTakeoffItems(line: TakeoffLine, name: string) {
+    const trimmed = name.trim();
+    if (!trimmed || !line.itemIds.length) return;
+    const updates = line.itemIds.map((id) => {
+      const meta = takeoffItemMetaById[id] ?? {};
+      return db
+        .from("takeoff_items")
+        .update({
+          name: trimmed,
+          meta: { ...meta, templateName: trimmed },
+        })
+        .eq("id", id);
+    });
+
+    try {
+      await Promise.all(updates);
+      setTakeoffLines((prev) =>
+        prev.map((l) => (l.key === line.key ? { ...l, description: trimmed, templateName: trimmed } : l))
+      );
+      if (projectId && user?.id) {
+        void db.from("project_activity").insert({
+          project_id: projectId,
+          actor_id: user.id,
+          action: "estimating_takeoff_rename",
+          entity_type: "estimate",
+          entity_id: null,
+          meta: {
+            name: trimmed,
+            actorName: user.email ?? null,
+          },
+        });
+      }
+    } catch (e: any) {
+      toast({
+        title: "Failed to rename takeoff items",
+        description: e?.message ?? "Could not update takeoff items.",
+        variant: "destructive",
+      });
+    }
+  }
+
   function importFromTakeoff() {
     toast({
       title: "Import from Takeoff",
@@ -867,6 +1060,35 @@ export function EstimatingWorkspaceContent({
       if (from < 0 || to < 0) return prev;
       return arrayMove(prev, from, to);
     });
+  }
+
+  function sendEstimatingSelection(rowKey: EstimateRowKey | null) {
+    if (!collabChannelRef.current || !user?.id) return;
+    collabChannelRef.current.send({
+      type: "broadcast",
+      event: "selection",
+      payload: { userId: user.id, rowKey },
+    });
+  }
+
+  function handleEstimatingMouseMove(e: React.MouseEvent<HTMLDivElement>) {
+    if (!collabChannelRef.current || !user?.id) return;
+    const rect = (e.currentTarget as HTMLDivElement).getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    pendingCursorRef.current = { x, y };
+    if (!cursorFrameRef.current) {
+      cursorFrameRef.current = requestAnimationFrame(() => {
+        cursorFrameRef.current = null;
+        const pending = pendingCursorRef.current;
+        if (!pending || !collabChannelRef.current) return;
+        collabChannelRef.current.send({
+          type: "broadcast",
+          event: "cursor",
+          payload: { userId: user.id, x: pending.x, y: pending.y },
+        });
+      });
+    }
   }
 
   const containerClass = embedded ? "h-full" : "";
@@ -889,6 +1111,23 @@ export function EstimatingWorkspaceContent({
             </div>
 
             <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                <span>Online:</span>
+                {Object.values(collabUsers).length ? (
+                  <div className="flex items-center gap-1">
+                    {Object.values(collabUsers).map((u) => (
+                      <span
+                        key={u.id}
+                        className="inline-flex h-2 w-2 rounded-full border border-white"
+                        style={{ backgroundColor: u.color }}
+                        title={u.name}
+                      />
+                    ))}
+                  </div>
+                ) : (
+                  <span>1</span>
+                )}
+              </div>
               <div className="rounded-full border border-border bg-background px-3 py-1 text-sm tabular-nums">
                 Subtotal: ${money(subtotal)}
               </div>
@@ -912,7 +1151,11 @@ export function EstimatingWorkspaceContent({
           </div>
 
           <div className="mt-4 flex flex-col gap-4 lg:flex-row">
-            <div className="min-w-0 flex-1 overflow-auto rounded-xl border border-border">
+            <div
+              ref={tableContainerRef}
+              className="relative min-w-0 flex-1 overflow-auto rounded-xl border border-border"
+              onMouseMove={handleEstimatingMouseMove}
+            >
               <table className="min-w-full text-left text-sm">
               <thead className="bg-muted/40">
                 <tr>
@@ -946,8 +1189,14 @@ export function EstimatingWorkspaceContent({
                           const cat = row.data as EstimateCategory;
                           const total = categoryTotals.get(cat.id) ?? 0;
                           const isCollapsed = collapsedSet.has(cat.id);
+                          const isRemoteSelected = remoteSelectedRows.has(rowKey);
                           return (
-                            <SortableRow key={rowKey} id={rowKey} className="border-t border-border bg-muted/30">
+                            <SortableRow
+                              key={rowKey}
+                              id={rowKey}
+                              onClick={() => sendEstimatingSelection(rowKey)}
+                              className={`border-t border-border bg-muted/30 ${isRemoteSelected ? "ring-1 ring-primary/40" : ""}`}
+                            >
                               {() => (
                                 <>
                                   <td className="px-2 py-2">
@@ -1033,8 +1282,14 @@ export function EstimatingWorkspaceContent({
                           const qty = typeof override?.qty === "number" ? override.qty : l.qty;
                           const waste = override?.wastePct ?? 0;
                           const amount = lineAmount(Number(qty) || 0, rate, waste);
+                          const isRemoteSelected = remoteSelectedRows.has(rowKey);
                           return (
-                            <SortableRow key={rowKey} id={rowKey} className="border-t border-border bg-muted/10">
+                            <SortableRow
+                              key={rowKey}
+                              id={rowKey}
+                              onClick={() => sendEstimatingSelection(rowKey)}
+                              className={`border-t border-border bg-muted/10 ${isRemoteSelected ? "ring-1 ring-primary/40" : ""}`}
+                            >
                               {() => (
                                 <>
                                   <td className="px-2 py-2">
@@ -1050,6 +1305,7 @@ export function EstimatingWorkspaceContent({
                                           [l.key]: { ...p[l.key], description: e.target.value },
                                         }))
                                       }
+                                      onBlur={(e) => renameTakeoffItems(l, e.target.value)}
                                     />
                                   </td>
                                   <td className="px-3 py-2">
@@ -1106,10 +1362,16 @@ export function EstimatingWorkspaceContent({
                         const l = entry.line;
                         if (entry.categoryId && collapsedSet.has(entry.categoryId)) return null;
                         const amount = lineAmount(Number(l.qty) || 0, Number(l.rate) || 0, l.wastePct ?? 0);
-                        return (
-                          <SortableRow key={rowKey} id={rowKey} className="border-t border-border">
-                            {() => (
-                              <>
+                          const isRemoteSelected = remoteSelectedRows.has(rowKey);
+                          return (
+                            <SortableRow
+                              key={rowKey}
+                              id={rowKey}
+                              onClick={() => sendEstimatingSelection(rowKey)}
+                              className={`border-t border-border ${isRemoteSelected ? "ring-1 ring-primary/40" : ""}`}
+                            >
+                              {() => (
+                                <>
                                 <td className="px-2 py-2">
                                   <div className="flex items-center gap-2">
                                     <input
@@ -1187,6 +1449,32 @@ export function EstimatingWorkspaceContent({
                 )}
               </tbody>
               </table>
+              <div className="pointer-events-none absolute inset-0">
+                {Object.entries(remoteCursors)
+                  .filter(([, c]) => Date.now() - c.ts < 5000)
+                  .map(([userId, c]) => {
+                    const user = collabUsers[userId];
+                    if (!user) return null;
+                    return (
+                      <div
+                        key={`cursor-${userId}`}
+                        className="absolute -translate-x-1/2 -translate-y-1/2"
+                        style={{ left: c.x, top: c.y }}
+                      >
+                        <div
+                          className="h-2 w-2 rounded-full border border-white"
+                          style={{ backgroundColor: user.color }}
+                        />
+                        <div
+                          className="mt-1 rounded px-1.5 py-0.5 text-[10px] text-white"
+                          style={{ backgroundColor: user.color }}
+                        >
+                          {user.name}
+                        </div>
+                      </div>
+                    );
+                  })}
+              </div>
             </div>
 
             <div className="w-full lg:w-[280px]">

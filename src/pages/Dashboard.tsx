@@ -6,6 +6,8 @@ import { RecentProjectsTable } from "@/components/dashboard/RecentProjectsTable"
 import { DashboardCharts } from "@/components/dashboard/DashboardCharts";
 import { PipelineInsights } from "@/components/dashboard/PipelineInsights";
 import { AlertsPanel } from "@/components/dashboard/AlertsPanel";
+import { ActivityFeed } from "@/components/dashboard/ActivityFeed";
+import { ProjectPresenceCard } from "@/components/dashboard/ProjectPresenceCard";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useProjects, useProjectStats } from "@/hooks/useProjects";
@@ -92,12 +94,14 @@ export default function Dashboard() {
           </div>
         )}
 
-        {/* Bottom grid: recent projects + status breakdown */}
+        {/* Bottom grid: recent projects + status + activity */}
         <div className="grid gap-4 lg:grid-cols-3">
-          <div className="lg:col-span-2">
+          <div className="lg:col-span-2 space-y-4">
             <RecentProjectsTable />
+            <ActivityFeed />
           </div>
-          <div>
+          <div className="space-y-4">
+            <ProjectPresenceCard />
             {loading ? (
               <Skeleton className="h-64" />
             ) : stats ? (
