@@ -4,7 +4,7 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { fetchDashboardData, searchUsersAndClients } from "@/services/adminService";
-import { AppUser, Client, DashboardMetrics, DashboardTrends } from "@/types/admin";
+import { AppUser, Client, DashboardMetrics, DashboardTrends, Organization, Payment } from "@/types/admin";
 import { ArrowUpRight } from "lucide-react";
 
 function KpiCard({
@@ -47,6 +47,8 @@ export default function AdminDashboard() {
   const [trends, setTrends] = useState<DashboardTrends | null>(null);
   const [pendingApprovals, setPendingApprovals] = useState<AppUser[]>([]);
   const [overdueClients, setOverdueClients] = useState<Client[]>([]);
+  const [expiringTrials, setExpiringTrials] = useState<Organization[]>([]);
+  const [failedPayments, setFailedPayments] = useState<Payment[]>([]);
   const [searchTerm, setSearchTerm] = useState("");
   const [searchUsers, setSearchUsers] = useState<AppUser[]>([]);
   const [searchClients, setSearchClients] = useState<Client[]>([]);
@@ -63,6 +65,8 @@ export default function AdminDashboard() {
         setTrends(dashboard.trends);
         setPendingApprovals(dashboard.pendingApprovals);
         setOverdueClients(dashboard.overdueClients);
+        setExpiringTrials(dashboard.expiringTrials);
+        setFailedPayments(dashboard.failedPayments);
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -95,9 +99,11 @@ export default function AdminDashboard() {
     return [
       { label: "Total users", value: metrics.totalUsers.toLocaleString() },
       { label: "Active users", value: metrics.activeUsers.toLocaleString() },
-      { label: "Pending approvals", value: metrics.pendingApprovals.toLocaleString() },
-      { label: "Paying customers", value: metrics.payingCustomers.toLocaleString() },
-      { label: "Overdue invoices", value: metrics.overdueInvoices.toLocaleString() },
+      { label: "Total orgs", value: metrics.totalOrgs.toLocaleString() },
+      { label: "Active subscriptions", value: metrics.activeSubscriptions.toLocaleString() },
+      { label: "Trials expiring", value: metrics.trialsExpiringSoon.toLocaleString() },
+      { label: "Failed payments", value: metrics.failedPayments.toLocaleString() },
+      { label: "Delinquent accounts", value: metrics.delinquentAccounts.toLocaleString() },
       { label: "Total MRR", value: `$${metrics.totalMRR.toLocaleString()}` },
     ];
   }, [metrics]);
@@ -128,7 +134,7 @@ export default function AdminDashboard() {
           ))}
         </div>
       ) : (
-        <div className="grid gap-4 md:grid-cols-3">
+        <div className="grid gap-4 md:grid-cols-4">
           {kpis.map((kpi) => (
             <KpiCard key={kpi.label} label={kpi.label} value={kpi.value} />
           ))}
@@ -201,7 +207,7 @@ export default function AdminDashboard() {
 
         <Card className="rounded-2xl border bg-white p-4 shadow-sm lg:col-span-2">
           <div className="text-sm font-semibold text-slate-900">Action needed</div>
-          <div className="mt-4 grid gap-4 md:grid-cols-2">
+          <div className="mt-4 grid gap-4 md:grid-cols-3">
             <div>
               <div className="text-xs font-semibold uppercase text-slate-500">Pending approvals</div>
               <div className="mt-2 space-y-2">
@@ -226,22 +232,43 @@ export default function AdminDashboard() {
             </div>
 
             <div>
-              <div className="text-xs font-semibold uppercase text-slate-500">Overdue reminders</div>
+              <div className="text-xs font-semibold uppercase text-slate-500">Trials expiring</div>
               <div className="mt-2 space-y-2">
-                {overdueClients.length ? (
-                  overdueClients.map((client) => (
-                    <div key={client.id} className="flex items-center justify-between rounded-lg border p-2">
+                {expiringTrials.length ? (
+                    expiringTrials.map((org) => (
+                      <div key={org.id} className="flex items-center justify-between rounded-lg border p-2">
                       <div>
-                        <div className="text-sm font-medium text-slate-900">{client.name}</div>
-                        <div className="text-xs text-slate-500">{client.billing_email}</div>
+                        <div className="text-sm font-medium text-slate-900">{org.name}</div>
+                        <div className="text-xs text-slate-500">{org.billing_email ?? "--"}</div>
                       </div>
-                      <span className="rounded-full bg-rose-100 px-2 py-1 text-[10px] font-semibold text-rose-700">
-                        Overdue
+                      <span className="rounded-full bg-amber-100 px-2 py-1 text-[10px] font-semibold text-amber-700">
+                        Trial
                       </span>
                     </div>
                   ))
                 ) : (
-                  <div className="text-xs text-slate-500">No overdue reminders.</div>
+                  <div className="text-xs text-slate-500">No trials expiring.</div>
+                )}
+              </div>
+            </div>
+
+            <div>
+              <div className="text-xs font-semibold uppercase text-slate-500">Failed payments</div>
+              <div className="mt-2 space-y-2">
+                {failedPayments.length ? (
+                  failedPayments.map((payment) => (
+                    <div key={payment.id} className="flex items-center justify-between rounded-lg border p-2">
+                      <div>
+                        <div className="text-sm font-medium text-slate-900">{payment.id}</div>
+                        <div className="text-xs text-slate-500">{payment.failure_code ?? "Failed"}</div>
+                      </div>
+                      <span className="rounded-full bg-rose-100 px-2 py-1 text-[10px] font-semibold text-rose-700">
+                        Failed
+                      </span>
+                    </div>
+                  ))
+                ) : (
+                  <div className="text-xs text-slate-500">No failed payments.</div>
                 )}
               </div>
             </div>

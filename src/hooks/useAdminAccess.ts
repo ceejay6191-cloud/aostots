@@ -75,7 +75,8 @@ export function useAdminAccess() {
     const canAssignAdmin = role === "owner";
     const canDelete = role === "owner" || role === "admin";
     const canEditBilling = role === "owner" || role === "admin" || role === "manager";
-    return { canAccess, canManageUsers, canAssignAdmin, canDelete, canEditBilling };
+    const canImpersonate = role === "owner" || role === "admin";
+    return { canAccess, canManageUsers, canAssignAdmin, canDelete, canEditBilling, canImpersonate };
   }, [role]);
 
   return { role, loading, ...permissions };

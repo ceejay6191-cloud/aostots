@@ -25,7 +25,7 @@ export default function AdminSettings() {
         if (!cancelled) setSettings(data);
       } catch (e: any) {
         if (!cancelled) {
-          setError(e?.message ?? "Failed to load settings.");
+          setError(e?.message || "Failed to load settings.");
           setSettings(demoSettings);
           toast({ title: "Could not load settings", description: e?.message, variant: "destructive" });
         }
@@ -178,7 +178,7 @@ export default function AdminSettings() {
       <Card className="rounded-2xl border bg-white p-4 shadow-sm">
         <div className="text-sm font-semibold text-slate-900">SMTP / provider integration</div>
         <div className="mt-2 text-sm text-slate-500">
-          Provider: {settings.smtpProvider.provider} · Status: {settings.smtpProvider.status}
+          Provider: {settings.smtpProvider.provider} | Status: {settings.smtpProvider.status}
         </div>
         <Button className="mt-3" variant="outline">
           Configure provider

@@ -1,10 +1,24 @@
 import { NavLink, Outlet, useLocation } from "react-router-dom";
-import { LayoutDashboard, Users, CreditCard, BarChart3, Settings, Shield } from "lucide-react";
+import {
+  LayoutDashboard,
+  Users,
+  CreditCard,
+  BarChart3,
+  Settings,
+  Shield,
+  Building2,
+  Layers3,
+  Package,
+} from "lucide-react";
 import { useAdminAccess } from "@/hooks/useAdminAccess";
 
 const navItems = [
   { to: "/admin/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { to: "/admin/users", label: "Users", icon: Users },
+  { to: "/admin/organizations", label: "Organizations", icon: Building2 },
+  { to: "/admin/teams", label: "Teams", icon: Users },
+  { to: "/admin/subscriptions", label: "Subscriptions", icon: Layers3 },
+  { to: "/admin/plans", label: "Plans", icon: Package },
   { to: "/admin/billing", label: "Billing", icon: CreditCard },
   { to: "/admin/analytics", label: "Analytics", icon: BarChart3 },
   { to: "/admin/settings", label: "Settings", icon: Settings },

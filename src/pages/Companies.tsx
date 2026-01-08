@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
+import { useAdminAccess } from "@/hooks/useAdminAccess";
 import { toast } from "@/components/ui/use-toast";
 
 const db = supabase as any;
@@ -15,6 +16,8 @@ type CompanyRow = {
   name: string;
   owner_id: string;
   join_code: string;
+  plan_name: "Solo License" | "Company License";
+  plan_expires_at: string | null;
 };
 
 type MembershipRow = {
@@ -26,13 +29,20 @@ type MembershipRow = {
   company: CompanyRow | null;
 };
 
-export default function Companies() {
+export function CompaniesContent() {
   const { user } = useAuth();
+  const { role } = useAdminAccess();
+  const isAdmin = role === "owner" || role === "admin";
   const [loading, setLoading] = useState(true);
   const [memberships, setMemberships] = useState<MembershipRow[]>([]);
   const [createName, setCreateName] = useState("");
+  const [ownerEmail, setOwnerEmail] = useState("");
   const [joinCode, setJoinCode] = useState("");
   const [pending, setPending] = useState<MembershipRow[]>([]);
+  const [inviteEmails, setInviteEmails] = useState<Record<string, string>>({});
+  const [planEdits, setPlanEdits] = useState<
+    Record<string, { plan_name: "Solo License" | "Company License"; plan_expires_at: string }>
+  >({});
 
   const activeCompanies = useMemo(
     () => memberships.filter((m) => m.status === "active" && m.company),
@@ -55,11 +65,25 @@ export default function Companies() {
         setLoading(true);
         const { data, error } = await db
           .from("company_memberships")
-          .select("id,company_id,user_id,role,status,company:companies(id,name,owner_id,join_code)")
+          .select("id,company_id,user_id,role,status,company:companies(id,name,owner_id,join_code,plan_name,plan_expires_at)")
           .eq("user_id", user.id)
           .order("created_at", { ascending: false });
         if (error) throw error;
-        if (!cancelled) setMemberships((data ?? []) as MembershipRow[]);
+        if (!cancelled) {
+          const rows = (data ?? []) as MembershipRow[];
+          setMemberships(rows);
+          const nextPlanEdits: Record<string, { plan_name: "Solo License" | "Company License"; plan_expires_at: string }> =
+            {};
+          rows.forEach((row) => {
+            if (row.company) {
+              nextPlanEdits[row.company.id] = {
+                plan_name: row.company.plan_name,
+                plan_expires_at: row.company.plan_expires_at || "",
+              };
+            }
+          });
+          setPlanEdits(nextPlanEdits);
+        }
       } catch (e: any) {
         if (!cancelled) {
           setMemberships([]);
@@ -87,7 +111,7 @@ export default function Companies() {
       }
       const { data, error } = await db
         .from("company_memberships")
-        .select("id,company_id,user_id,role,status,company:companies(id,name,owner_id,join_code)")
+        .select("id,company_id,user_id,role,status,company:companies(id,name,owner_id,join_code,plan_name,plan_expires_at)")
         .in("company_id", adminCompanyIds)
         .eq("status", "pending");
       if (error || cancelled) return;
@@ -100,13 +124,26 @@ export default function Companies() {
 
   async function handleCreateCompany() {
     const name = createName.trim();
+    const email = ownerEmail.trim();
     if (!name || !user?.id) return;
-    const { error } = await db.from("companies").insert({ name, owner_id: user.id });
+    if (!isAdmin) {
+      toast({ title: "Only admins can create companies." });
+      return;
+    }
+    if (!email) {
+      toast({ title: "Owner email is required." });
+      return;
+    }
+    const { error } = await db.rpc("admin_create_company_by_email", {
+      company_name: name,
+      owner_email: email,
+    });
     if (error) {
       toast({ title: "Create failed", description: error.message, variant: "destructive" });
       return;
     }
     setCreateName("");
+    setOwnerEmail("");
     window.location.reload();
   }
 
@@ -155,13 +192,44 @@ export default function Companies() {
     window.location.reload();
   }
 
+  async function handleInviteMember(companyId: string) {
+    const email = (inviteEmails[companyId] || "").trim();
+    if (!email) return;
+    const { error } = await db.rpc("invite_company_member_by_email", {
+      target_company_id: companyId,
+      target_email: email,
+      target_role: "member",
+    });
+    if (error) {
+      toast({ title: "Invite failed", description: error.message, variant: "destructive" });
+      return;
+    }
+    setInviteEmails((prev) => ({ ...prev, [companyId]: "" }));
+    toast({ title: "Invite sent" });
+  }
+
+  async function handleUpdateCompanyPlan(companyId: string) {
+    if (!isAdmin) return;
+    const plan = planEdits[companyId];
+    if (!plan) return;
+    const { error } = await db.rpc("admin_update_company_plan", {
+      target_company_id: companyId,
+      new_plan_name: plan.plan_name,
+      new_plan_expires_at: plan.plan_expires_at ? plan.plan_expires_at : null,
+    });
+    if (error) {
+      toast({ title: "Plan update failed", description: error.message, variant: "destructive" });
+      return;
+    }
+    toast({ title: "Company plan updated" });
+  }
+
   return (
-    <AppLayout>
-      <div className="space-y-6">
-        <div>
-          <div className="text-2xl font-semibold">Company Teams</div>
-          <div className="text-sm text-muted-foreground">Manage company memberships and approvals.</div>
-        </div>
+    <div className="space-y-6">
+      <div>
+        <div className="text-2xl font-semibold">Company Teams</div>
+        <div className="text-sm text-muted-foreground">Manage company memberships and approvals.</div>
+      </div>
 
         <div className="grid gap-4 lg:grid-cols-3">
           <Card className="p-4">
@@ -171,10 +239,23 @@ export default function Companies() {
                 placeholder="Company name"
                 value={createName}
                 onChange={(e) => setCreateName(e.target.value)}
+                disabled={!isAdmin}
               />
-              <Button onClick={handleCreateCompany} disabled={!createName.trim()}>
+              <Input
+                placeholder="Owner email"
+                value={ownerEmail}
+                onChange={(e) => setOwnerEmail(e.target.value)}
+                disabled={!isAdmin}
+              />
+              <Button
+                onClick={handleCreateCompany}
+                disabled={!createName.trim() || !ownerEmail.trim() || !isAdmin}
+              >
                 Create
               </Button>
+              {!isAdmin ? (
+                <div className="text-xs text-muted-foreground">Only admins can create company accounts.</div>
+              ) : null}
             </div>
           </Card>
 
@@ -208,11 +289,66 @@ export default function Companies() {
                   <div>
                     <div className="text-sm font-medium">{m.company?.name ?? "Company"}</div>
                     <div className="text-xs text-muted-foreground">
-                      {m.role} · {m.status}
+                      {m.role} | {m.status}
                     </div>
                   </div>
                   {m.company && ["owner", "admin", "manager"].includes(m.role) ? (
-                    <div className="text-xs text-muted-foreground">Join code: {m.company.join_code}</div>
+                    <div className="flex flex-col items-end gap-2">
+                      <div className="text-xs text-muted-foreground">Join code: {m.company.join_code}</div>
+                      <div className="flex items-center gap-2">
+                        <Input
+                          className="h-8 w-48"
+                          placeholder="Invite email"
+                          value={inviteEmails[m.company.id] ?? ""}
+                          onChange={(e) =>
+                            setInviteEmails((prev) => ({ ...prev, [m.company!.id]: e.target.value }))
+                          }
+                        />
+                        <Button size="sm" onClick={() => handleInviteMember(m.company!.id)}>
+                          Invite
+                        </Button>
+                      </div>
+                    </div>
+                  ) : null}
+                  {m.company && isAdmin ? (
+                    <div className="flex flex-col items-end gap-2">
+                      <div className="text-xs text-muted-foreground">Plan settings</div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <select
+                          className="h-8 rounded-md border border-input bg-background px-2 text-xs"
+                          value={planEdits[m.company.id]?.plan_name ?? m.company.plan_name}
+                          onChange={(event) =>
+                            setPlanEdits((prev) => ({
+                              ...prev,
+                              [m.company!.id]: {
+                                plan_name: event.target.value as "Solo License" | "Company License",
+                                plan_expires_at: prev[m.company!.id]?.plan_expires_at ?? "",
+                              },
+                            }))
+                          }
+                        >
+                          <option value="Solo License">Solo License</option>
+                          <option value="Company License">Company License</option>
+                        </select>
+                        <Input
+                          type="date"
+                          className="h-8 w-40"
+                          value={planEdits[m.company.id]?.plan_expires_at ?? m.company.plan_expires_at ?? ""}
+                          onChange={(event) =>
+                            setPlanEdits((prev) => ({
+                              ...prev,
+                              [m.company!.id]: {
+                                plan_name: prev[m.company!.id]?.plan_name ?? m.company!.plan_name,
+                                plan_expires_at: event.target.value,
+                              },
+                            }))
+                          }
+                        />
+                        <Button size="sm" variant="outline" onClick={() => handleUpdateCompanyPlan(m.company!.id)}>
+                          Save plan
+                        </Button>
+                      </div>
+                    </div>
                   ) : null}
                 </div>
               ))}
@@ -247,7 +383,14 @@ export default function Companies() {
             <div className="mt-3 text-sm text-muted-foreground">No pending requests.</div>
           )}
         </Card>
-      </div>
+    </div>
+  );
+}
+
+export default function Companies() {
+  return (
+    <AppLayout>
+      <CompaniesContent />
     </AppLayout>
   );
 }

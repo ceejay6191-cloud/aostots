@@ -453,7 +453,7 @@ export default function MarketingSite() {
         <div className="mx-auto flex max-w-6xl flex-col gap-3 px-4 py-8 text-sm text-slate-600 sm:flex-row sm:items-center sm:justify-between sm:px-6">
           <div className="flex items-center gap-2">
             <div className="h-7 w-7 rounded-xl bg-slate-900" />
-            <span className="font-semibold text-slate-900">Aostot</span>
+            <div className="text-sm font-semibold text-slate-900">AOSTOT</div>
             <span className="text-slate-400">•</span>
             <span>Cloud On-Screen Takeoff</span>
           </div>

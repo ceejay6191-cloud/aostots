@@ -1,4 +1,20 @@
-import { AdminRole, AdminSettings, AppUser, Client, Subscription, Invoice, ReminderEmail, AuditLog } from "@/types/admin";
+import {
+  AdminRole,
+  AdminSettings,
+  AppUser,
+  Client,
+  Subscription,
+  Invoice,
+  ReminderEmail,
+  AuditLog,
+  Organization,
+  Plan,
+  OrgSubscription,
+  OrgMembership,
+  PaymentMethod,
+  Payment,
+  DunningEvent,
+} from "@/types/admin";
 
 const now = new Date();
 
@@ -102,8 +118,8 @@ export const demoSubscriptions: Subscription[] = [
   {
     id: "sub-1",
     client_id: "client-1",
-    plan_name: "Growth",
-    amount: 299,
+    plan_name: "Company License",
+    amount: 320,
     currency: "USD",
     billing_cycle: "monthly",
     next_due_date: new Date(Date.now() + 1000 * 60 * 60 * 24 * 5).toISOString().slice(0, 10),
@@ -113,8 +129,8 @@ export const demoSubscriptions: Subscription[] = [
   {
     id: "sub-2",
     client_id: "client-2",
-    plan_name: "Enterprise",
-    amount: 999,
+    plan_name: "Company License",
+    amount: 320,
     currency: "USD",
     billing_cycle: "monthly",
     next_due_date: new Date(Date.now() - 1000 * 60 * 60 * 24 * 9).toISOString().slice(0, 10),
@@ -124,8 +140,8 @@ export const demoSubscriptions: Subscription[] = [
   {
     id: "sub-3",
     client_id: "client-3",
-    plan_name: "Starter",
-    amount: 99,
+    plan_name: "Solo License",
+    amount: 119,
     currency: "USD",
     billing_cycle: "monthly",
     next_due_date: new Date(Date.now() - 1000 * 60 * 60 * 24 * 20).toISOString().slice(0, 10),
@@ -170,6 +186,54 @@ export const demoReminders: ReminderEmail[] = [
   },
 ];
 
+export const demoPayments: Payment[] = [
+  {
+    id: "pay-1",
+    client_id: "client-2",
+    invoice_id: "inv-1",
+    amount: 999,
+    currency: "USD",
+    status: "failed",
+    paid_at: null,
+    failure_code: "card_declined",
+    failure_message: "Card was declined.",
+    provider_txn_id: "txn_demo_1",
+    created_at: makeDate(1),
+  },
+  {
+    id: "pay-2",
+    client_id: "client-1",
+    invoice_id: null,
+    amount: 299,
+    currency: "USD",
+    status: "succeeded",
+    paid_at: makeDate(3),
+    failure_code: null,
+    failure_message: null,
+    provider_txn_id: "txn_demo_2",
+    created_at: makeDate(3),
+  },
+];
+
+export const demoDunningEvents: DunningEvent[] = [
+  {
+    id: "dun-1",
+    client_id: "client-2",
+    invoice_id: "inv-1",
+    stage: "reminder_1",
+    occurred_at: makeDate(2),
+    metadata: { channel: "email" },
+  },
+  {
+    id: "dun-2",
+    client_id: "client-2",
+    invoice_id: "inv-1",
+    stage: "final_notice",
+    occurred_at: makeDate(1),
+    metadata: { channel: "email" },
+  },
+];
+
 export const demoAuditLogs: AuditLog[] = [
   {
     id: "audit-1",
@@ -203,3 +267,113 @@ export const demoSettings: AdminSettings = {
   notificationSettings: { overdueRemindersEnabled: true, daysBeforeDue: 5, followUpCadenceDays: 7 },
   smtpProvider: { provider: "SendGrid", status: "configured" },
 };
+
+export const demoOrganizations: Organization[] = [
+  {
+    id: "org-1",
+    name: "Ceejay Construction",
+    owner_user_id: "demo-user-1",
+    billing_email: "billing@ceejayco.com",
+    address: "101 Market St, San Francisco, CA",
+    status: "active",
+    tags: ["vip", "priority"],
+    created_at: makeDate(220),
+  },
+  {
+    id: "org-2",
+    name: "Northshore Build",
+    owner_user_id: "demo-user-2",
+    billing_email: "finance@northshore.com",
+    address: "88 King St, Seattle, WA",
+    status: "trialing",
+    tags: ["trial"],
+    created_at: makeDate(150),
+  },
+];
+
+export const demoPlans: Plan[] = [
+  {
+    id: "plan-1",
+    name: "Solo License",
+    price_monthly: 119,
+    price_annual: 1428,
+    currency: "USD",
+    included_seats: 3,
+    usage_limits_json: { max_projects: 5, max_documents: 25 },
+    entitlements_json: { takeoff_tools_enabled: true, estimating_module_enabled: false },
+    overage_rules_json: {},
+  },
+  {
+    id: "plan-2",
+    name: "Company License",
+    price_monthly: 320,
+    price_annual: 3840,
+    currency: "USD",
+    included_seats: 10,
+    usage_limits_json: { max_projects: 25, max_documents: 200 },
+    entitlements_json: { takeoff_tools_enabled: true, estimating_module_enabled: true },
+    overage_rules_json: {},
+  },
+];
+
+export const demoOrgSubscriptions: OrgSubscription[] = [
+  {
+    id: "org-sub-1",
+    org_id: "org-1",
+    plan_id: "plan-2",
+    status: "active",
+    billing_cycle: "monthly",
+    trial_end_at: null,
+    current_period_start: new Date(Date.now() - 1000 * 60 * 60 * 24 * 10).toISOString().slice(0, 10),
+    current_period_end: new Date(Date.now() + 1000 * 60 * 60 * 24 * 20).toISOString().slice(0, 10),
+    cancel_at_period_end: false,
+    canceled_at: null,
+    mrr: 320,
+    plan: demoPlans[1],
+  },
+  {
+    id: "org-sub-2",
+    org_id: "org-2",
+    plan_id: "plan-1",
+    status: "trialing",
+    billing_cycle: "monthly",
+    trial_end_at: new Date(Date.now() + 1000 * 60 * 60 * 24 * 8).toISOString().slice(0, 10),
+    current_period_start: new Date(Date.now() - 1000 * 60 * 60 * 24 * 5).toISOString().slice(0, 10),
+    current_period_end: new Date(Date.now() + 1000 * 60 * 60 * 24 * 25).toISOString().slice(0, 10),
+    cancel_at_period_end: false,
+    canceled_at: null,
+    mrr: 119,
+    plan: demoPlans[0],
+  },
+];
+
+export const demoOrgMemberships: OrgMembership[] = [
+  {
+    id: "org-m-1",
+    org_id: "org-1",
+    user_id: "demo-user-1",
+    role: "owner",
+    created_at: makeDate(220),
+    user: { user_id: "demo-user-1", full_name: "Ceejay Abne", email: "ceejayabne@gmail.com" },
+  },
+  {
+    id: "org-m-2",
+    org_id: "org-2",
+    user_id: "demo-user-2",
+    role: "owner",
+    created_at: makeDate(150),
+    user: { user_id: "demo-user-2", full_name: "Mina Lagos", email: "mina@northshore.com" },
+  },
+];
+
+export const demoPaymentMethods: PaymentMethod[] = [
+  {
+    id: "pm-1",
+    org_id: "org-1",
+    brand: "Visa",
+    last4: "4242",
+    exp_month: 12,
+    exp_year: 2026,
+    status: "valid",
+  },
+];

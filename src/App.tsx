@@ -17,15 +17,19 @@ import EstimatingWorkspace from "@/pages/EstimatingWorkspace";
 import ProposalWorkspace from "@/pages/ProposalWorkspace";
 import ScanWorkspace from "@/pages/ScanWorkspace";
 import Assemblies from "@/pages/Assemblies";
-import Companies from "@/pages/Companies";
 import { AdminRoute } from "@/components/admin/AdminRoute";
 import { AdminLayout } from "@/components/admin/AdminLayout";
 import AdminDashboard from "@/pages/admin/AdminDashboard";
 import AdminUsers from "@/pages/admin/AdminUsers";
 import AdminUserDetails from "@/pages/admin/AdminUserDetails";
+import AdminOrganizations from "@/pages/admin/AdminOrganizations";
+import AdminOrganizationDetails from "@/pages/admin/AdminOrganizationDetails";
+import AdminSubscriptions from "@/pages/admin/AdminSubscriptions";
+import AdminPlans from "@/pages/admin/AdminPlans";
 import AdminBilling from "@/pages/admin/AdminBilling";
 import AdminAnalytics from "@/pages/admin/AdminAnalytics";
 import AdminSettings from "@/pages/admin/AdminSettings";
+import AdminTeams from "@/pages/admin/AdminTeams";
 
 const queryClient = new QueryClient();
 
@@ -42,7 +46,6 @@ const App = () => (
             <Route path="/dashboard" element={<Dashboard />} />
             <Route path="/projects" element={<Projects />} />
             <Route path="/assemblies" element={<Assemblies />} />
-            <Route path="/companies" element={<Companies />} />
             <Route
               path="/admin"
               element={
@@ -55,9 +58,14 @@ const App = () => (
               <Route path="dashboard" element={<AdminDashboard />} />
               <Route path="users" element={<AdminUsers />} />
               <Route path="users/:id" element={<AdminUserDetails />} />
+              <Route path="organizations" element={<AdminOrganizations />} />
+              <Route path="organizations/:id" element={<AdminOrganizationDetails />} />
+              <Route path="subscriptions" element={<AdminSubscriptions />} />
+              <Route path="plans" element={<AdminPlans />} />
               <Route path="billing" element={<AdminBilling />} />
               <Route path="analytics" element={<AdminAnalytics />} />
               <Route path="settings" element={<AdminSettings />} />
+              <Route path="teams" element={<AdminTeams />} />
             </Route>
             <Route path="/projects/:projectId" element={<ProjectDetails />} />
             <Route path="/projects/new" element={<NewProject />} />

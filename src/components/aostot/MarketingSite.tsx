@@ -109,28 +109,39 @@ const FeatureList = ({ items }: { items: string[] }) => (
 function PricingCards() {
   const plans = [
     {
-      name: "Free",
-      desc: "Core takeoff for individuals.",
-      bullets: ["Line • Area • Count", "Quantities Grid", "Excel export"],
+      name: "Solo License",
+      price: "$119",
+      period: "per user / month",
+      desc: "Single-user access for independent estimators.",
+      bullets: [
+        "Core takeoff: Line -> Area -> Count",
+        "Personal projects only",
+        "Quantities Grid + Excel export",
+      ],
     },
     {
-      name: "Pro",
-      desc: "Automation + revisions.",
-      bullets: ["Auto Line", "Auto Count", "Revision overlays"],
-    },
-    {
-      name: "Team",
-      desc: "Collaboration + governance.",
-      bullets: ["Roles & permissions", "Audit trail", "Concurrent review"],
+      name: "Company License",
+      price: "$320",
+      period: "minimum per month",
+      desc: "Multi-user access with shared company projects.",
+      bullets: [
+        "All Solo features",
+        "Shared company projects",
+        "Roles, approvals, audit trail",
+      ],
     },
   ];
 
   return (
-    <div className="mt-10 grid gap-4 md:grid-cols-3">
+    <div className="mt-10 grid gap-4 md:grid-cols-2">
       {plans.map((p) => (
         <div key={p.name} className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
           <div className="text-sm font-semibold text-slate-900">{p.name}</div>
-          <div className="mt-1 text-xs text-slate-600">{p.desc}</div>
+          <div className="mt-2 flex items-baseline gap-2">
+            <div className="text-2xl font-semibold text-slate-900">{p.price}</div>
+            <div className="text-xs text-slate-500">{p.period}</div>
+          </div>
+          <div className="mt-2 text-xs text-slate-600">{p.desc}</div>
           <ul className="mt-4 space-y-2 text-xs text-slate-700">
             {p.bullets.map((b) => (
               <li key={b} className="flex gap-2">
@@ -144,14 +155,13 @@ function PricingCards() {
             className="mt-5 w-full"
             onClick={() => alert("Demo only. Pricing can be wired later.")}
           >
-            Select
+            Request access
           </Button>
         </div>
       ))}
     </div>
   );
 }
-
 export default function MarketingSite() {
   const [email, setEmail] = useState("");
   const [company, setCompany] = useState("");
@@ -245,7 +255,7 @@ export default function MarketingSite() {
               Aostot combines the best takeoff workflows into one platform.
             </h1>
             <p className="mt-4 max-w-xl text-sm leading-6 text-slate-600 sm:text-base">
-              A cloud-based on-screen takeoff platform built for speed, trust, and traceability—
+              A cloud-based on-screen takeoff platform built for speed, trust, and traceability???
               with Auto Line, Auto Count, revision overlays, a quantities grid, and Record Mode
               for edit-in-place corrections.
             </p>
@@ -266,19 +276,19 @@ export default function MarketingSite() {
             <div className="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
               <div className="rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
                 <div className="text-xs text-slate-500">Core tools</div>
-                <div className="mt-1 text-sm font-semibold">Line • Area • Count</div>
+                <div className="mt-1 text-sm font-semibold">Line ??? Area ??? Count</div>
               </div>
               <div className="rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
                 <div className="text-xs text-slate-500">Automation</div>
-                <div className="mt-1 text-sm font-semibold">Auto Line • Auto Count</div>
+                <div className="mt-1 text-sm font-semibold">Auto Line ??? Auto Count</div>
               </div>
               <div className="rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
                 <div className="text-xs text-slate-500">QA/QC</div>
-                <div className="mt-1 text-sm font-semibold">Overlay • Audit • Status</div>
+                <div className="mt-1 text-sm font-semibold">Overlay ??? Audit ??? Status</div>
               </div>
               <div className="rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
                 <div className="text-xs text-slate-500">Outputs</div>
-                <div className="mt-1 text-sm font-semibold">Excel • Reports • API</div>
+                <div className="mt-1 text-sm font-semibold">Excel ??? Reports ??? API</div>
               </div>
             </div>
           </div>
@@ -318,7 +328,7 @@ export default function MarketingSite() {
               <div className="lg:col-span-2 rounded-2xl border border-slate-200 bg-white p-4">
                 <div className="flex items-center justify-between">
                   <div className="text-xs font-semibold text-slate-700">Sheet</div>
-                  <div className="text-xs text-slate-500">Scale: 1:100 • Rev B</div>
+                  <div className="text-xs text-slate-500">Scale: 1:100 ??? Rev B</div>
                 </div>
                 <div className="mt-3 h-48 rounded-xl border border-dashed border-slate-300 bg-slate-50" />
                 <div className="mt-3 grid grid-cols-3 gap-2 text-xs text-slate-600">
@@ -326,7 +336,7 @@ export default function MarketingSite() {
                     Live Length: <span className="font-semibold text-slate-900">12.40m</span>
                   </div>
                   <div className="rounded-xl border border-slate-200 bg-white px-3 py-2">
-                    Live Area: <span className="font-semibold text-slate-900">18.9m²</span>
+                    Live Area: <span className="font-semibold text-slate-900">18.9m??</span>
                   </div>
                   <div className="rounded-xl border border-slate-200 bg-white px-3 py-2">
                     Status: <span className="font-semibold text-slate-900">Checked</span>
@@ -478,8 +488,8 @@ export default function MarketingSite() {
           <SectionTitle
             id="pricing"
             kicker="Pricing"
-            title="Simple tiers aligned to takeoff workflows"
-            subtitle="Start free, unlock automation with Pro, and add governance with Team."
+            title="Two simple plans that match how you work"
+            subtitle="Solo for individual estimators. Company for multi-user project collaboration."
           />
           <PricingCards />
         </div>
@@ -535,7 +545,7 @@ export default function MarketingSite() {
           <div className="flex items-center gap-2">
             <div className="h-7 w-7 rounded-xl bg-slate-900" />
             <span className="font-semibold text-slate-900">Aostot</span>
-            <span className="text-slate-400">•</span>
+            <span className="text-slate-400">???</span>
             <span>Cloud On-Screen Takeoff</span>
           </div>
           <div className="flex gap-5">

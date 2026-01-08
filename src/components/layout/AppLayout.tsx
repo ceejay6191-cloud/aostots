@@ -1,6 +1,6 @@
 import { ReactNode } from "react";
 import { Link, useLocation } from "react-router-dom";
-import { LayoutDashboard, FolderKanban, Boxes, LogOut, Users, Shield } from "lucide-react";
+import { LayoutDashboard, FolderKanban, Boxes, LogOut, Shield } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { supabase } from "@/integrations/supabase/client";
@@ -71,15 +71,18 @@ export function AppLayout({
       <header className="sticky top-0 z-40 border-b bg-background/80 backdrop-blur">
         <div className={`${padding} mx-auto flex items-center justify-between py-3`}>
           <div className="flex items-center gap-3">
-            <Link to="/" className="font-semibold tracking-tight">
-              AOSTOT
+            <Link to="/" className="flex items-center gap-2">
+              <div className="h-9 w-9 rounded-xl bg-slate-900" />
+              <div>
+                <div className="text-sm font-semibold text-slate-900">AOSTOT</div>
+                <div className="text-xs text-slate-500">Cloud On-Screen Takeoff</div>
+              </div>
             </Link>
 
             <nav className="hidden md:flex items-center gap-1">
               <NavLink to="/dashboard" label="Dashboard" icon={<LayoutDashboard className="h-4 w-4" />} />
               <NavLink to="/projects" label="Projects" icon={<FolderKanban className="h-4 w-4" />} />
               <NavLink to="/assemblies" label="Assemblies" icon={<Boxes className="h-4 w-4" />} />
-              <NavLink to="/companies" label="Teams" icon={<Users className="h-4 w-4" />} />
               {!adminLoading && canAccess ? (
                 <NavLink to="/admin/dashboard" label="Admin" icon={<Shield className="h-4 w-4" />} />
               ) : null}
